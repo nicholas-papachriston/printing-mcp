@@ -1,0 +1,30 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+
+.ruff_cache/
+.ty/
+.pytest_cache/
+.mypy_cache/
+
+dist/
+build/
+*.egg-info/
+
+# Local MCP/client config
+mcp.json
+.mcp.json
+
+# Generation pipeline intermediates
+**/generation/*_raw.stl
+**/generation/*_raw.glb
+**/generation/*_raw.obj
+**/generation/*_mesh.glb
+**/generation/*.tmp
+**/generation/tmp/
