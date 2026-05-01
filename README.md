@@ -21,7 +21,7 @@ through a hosted service.
 Clone this repository, then install the Python environment with `uv`:
 
 ```sh
-git clone https://github.com/<owner>/printing-mcp.git
+git clone https://github.com/nicholas-papachriston/printing-mcp.git
 cd printing-mcp
 uv sync
 ```
@@ -79,30 +79,7 @@ Add this to `~/.cursor/mcp.json`:
       "command": "uvx",
       "args": [
         "--from",
-        "/path/to/printing-mcp",
-        "printing-mcp"
-      ],
-      "env": {
-        "ORCASLICER_BIN": "/Applications/OrcaSlicer.app/Contents/MacOS/OrcaSlicer",
-        "ELEGOO_PRINTER_HOST": "192.168.1.50",
-        "ELEGOO_PRINTER_TYPE": "cc2"
-      }
-    }
-  }
-}
-```
-
-If this repository is published at a Git URL, you can use that URL instead of a
-local path:
-
-```json
-{
-  "mcpServers": {
-    "printing": {
-      "command": "uvx",
-      "args": [
-        "--from",
-        "git+https://github.com/<owner>/printing-mcp.git",
+        "git+https://github.com/nicholas-papachriston/printing-mcp.git",
         "printing-mcp"
       ]
     }
@@ -125,7 +102,7 @@ For VS Code MCP configuration, use the `servers` key:
       "command": "uvx",
       "args": [
         "--from",
-        "/path/to/printing-mcp",
+        "git+https://github.com/nicholas-papachriston/printing-mcp.git",
         "printing-mcp"
       ],
       "env": {
