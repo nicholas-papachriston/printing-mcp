@@ -81,7 +81,12 @@ Add this to `~/.cursor/mcp.json`:
         "--from",
         "git+https://github.com/nicholas-papachriston/printing-mcp.git",
         "printing-mcp"
-      ]
+      ],
+      "env": {
+        "ORCASLICER_BIN": "/Applications/OrcaSlicer.app/Contents/MacOS/OrcaSlicer",
+        "ELEGOO_PRINTER_HOST": "192.168.1.50",
+        "ELEGOO_PRINTER_TYPE": "cc2"
+      }
     }
   }
 }
