@@ -3,6 +3,8 @@ name = "printing-mcp"
 version = "0.1.6"
 description = "All-in-one MCP server for Blender modeling and 3D-print slicing."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE-MIT"]
 requires-python = ">=3.11"
 dependencies = [
     "build123d>=0.10.0",

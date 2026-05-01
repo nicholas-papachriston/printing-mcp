@@ -508,3 +508,7 @@ Start the uploaded file with `elegoo_start_print`:
 
 For Centauri / Centauri Carbon (`printer_type: "cc"`), include `mainboard_id`
 from discovery for status and print commands.
+
+## License
+
+Printing MCP is licensed under the MIT License. See `LICENSE-MIT`.
