@@ -11,6 +11,75 @@ from .model_versions import fast_model_manifest
 
 
 @dataclass(frozen=True)
+class ModalMeshRequest:
+    image_b64: str
+    target_size_mm: tuple[float, float, float]
+    max_cost_usd: float
+    seed: int | None = None
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> ModalMeshRequest:
+        image_b64 = payload.get("image_b64")
+        if not isinstance(image_b64, str) or not image_b64:
+            raise ValueError("image_b64 is required.")
+        raw_target = payload.get("target_size_mm")
+        if not isinstance(raw_target, list | tuple) or len(raw_target) != 3:
+            raise ValueError("target_size_mm must contain exactly three values.")
+        raw_seed = payload.get("seed")
+        return cls(
+            image_b64=image_b64,
+            target_size_mm=(float(raw_target[0]), float(raw_target[1]), float(raw_target[2])),
+            max_cost_usd=float(payload.get("max_cost_usd", 0.08)),
+            seed=int(raw_seed) if raw_seed is not None else None,
+        )
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "image_b64": self.image_b64,
+            "target_size_mm": list(self.target_size_mm),
+            "max_cost_usd": self.max_cost_usd,
+            "seed": self.seed,
+        }
+
+
+@dataclass(frozen=True)
+class ModalMeshResult:
+    raw_stl_b64: str
+    raw_glb_b64: str
+    manifest: dict[str, Any]
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> ModalMeshResult:
+        raw_stl_b64 = payload.get("raw_stl_b64")
+        raw_glb_b64 = payload.get("raw_glb_b64")
+        manifest = payload.get("manifest", {})
+        if not isinstance(raw_stl_b64, str) or not raw_stl_b64:
+            raise ValueError("raw_stl_b64 is required in Modal mesh response.")
+        if not isinstance(raw_glb_b64, str):
+            raise ValueError("raw_glb_b64 is required in Modal mesh response.")
+        return cls(
+            raw_stl_b64=raw_stl_b64,
+            raw_glb_b64=raw_glb_b64,
+            manifest=manifest if isinstance(manifest, dict) else {},
+        )
+
+    @classmethod
+    def from_artifacts(cls, artifacts: MeshArtifacts) -> ModalMeshResult:
+        return cls(
+            raw_stl_b64=base64.b64encode(artifacts.raw_stl).decode("ascii"),
+            raw_glb_b64=base64.b64encode(artifacts.raw_glb or b"").decode("ascii"),
+            manifest=artifacts.manifest,
+        )
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "raw_stl_b64": self.raw_stl_b64,
+            "raw_glb_b64": self.raw_glb_b64,
+            "manifest": self.manifest,
+        }
+
+
+@dataclass(frozen=True)
 class MeshArtifacts:
     raw_stl: bytes
     raw_glb: bytes | None
@@ -74,30 +143,14 @@ def create_triposr_mesh(
 
 
 def create_triposr_mesh_from_base64(request: dict[str, Any]) -> dict[str, Any]:
-    image_b64 = request.get("image_b64")
-    if not isinstance(image_b64, str) or not image_b64:
-        raise ValueError("image_b64 is required.")
-    raw_target = request.get("target_size_mm")
-    if not isinstance(raw_target, list | tuple) or len(raw_target) != 3:
-        raise ValueError("target_size_mm must contain exactly three values.")
-    target_size_mm = (
-        float(raw_target[0]),
-        float(raw_target[1]),
-        float(raw_target[2]),
-    )
-    max_cost_usd = float(request.get("max_cost_usd", 0.08))
-    seed = request.get("seed")
+    mesh_request = ModalMeshRequest.from_payload(request)
     artifacts = create_triposr_mesh(
-        image_bytes=base64.b64decode(image_b64),
-        target_size_mm=target_size_mm,
-        max_cost_usd=max_cost_usd,
-        seed=int(seed) if seed is not None else None,
+        image_bytes=base64.b64decode(mesh_request.image_b64),
+        target_size_mm=mesh_request.target_size_mm,
+        max_cost_usd=mesh_request.max_cost_usd,
+        seed=mesh_request.seed,
     )
-    return {
-        "raw_stl_b64": base64.b64encode(artifacts.raw_stl).decode("ascii"),
-        "raw_glb_b64": base64.b64encode(artifacts.raw_glb or b"").decode("ascii"),
-        "manifest": artifacts.manifest,
-    }
+    return ModalMeshResult.from_artifacts(artifacts).to_payload()
 
 
 def _run_triposr(*, input_path: Path, seed: int | None) -> Any:

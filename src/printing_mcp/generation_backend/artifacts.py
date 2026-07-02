@@ -20,15 +20,11 @@ def ensure_output_dir(output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
 
-def write_placeholder_png(path: Path) -> None:
-    # 1x1 transparent PNG. This keeps the smoke path deterministic without Pillow.
-    path.write_bytes(
-        bytes.fromhex(
-            "89504e470d0a1a0a0000000d4948445200000001000000010806000000"
-            "1f15c4890000000d49444154789c6360000002000100ffff030000060005"
-            "57bfab0000000049454e44ae426082"
-        )
-    )
+def write_placeholder_png(path: Path, *, width: int = 1, height: int = 1) -> None:
+    from PIL import Image
+
+    image = Image.new("RGBA", (width, height), (255, 255, 255, 0))
+    image.save(path, format="PNG")
 
 
 def write_placeholder_stl(path: Path, target_size_mm: tuple[float, float, float]) -> None:

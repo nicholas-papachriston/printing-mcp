@@ -1294,12 +1294,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/9c/46/f6b4ad632c67ef35209a66127e4bddc95759649dd595f71f13fba11bdf9a/mcp-1.27.0-py3-none-any.whl", hash = "sha256:5ce1fa81614958e267b21fb2aa34e0aea8e2c6ede60d52aba45fd47246b4d741", size = 215967 },
 ]
 
-[package.optional-dependencies]
-cli = [
-    { name = "python-dotenv" },
-    { name = "typer" },
-]
-
 [[package]]
 name = "mdurl"
 version = "0.1.2"
@@ -1697,16 +1691,20 @@ name = "printing-mcp"
 version = "0.1.6"
 source = { editable = "." }
 dependencies = [
-    { name = "build123d" },
     { name = "gcode-lib" },
     { name = "google-genai" },
-    { name = "mcp", extra = ["cli"] },
+    { name = "mcp" },
     { name = "modal" },
     { name = "paho-mqtt" },
     { name = "pillow" },
     { name = "pydantic" },
     { name = "trimesh" },
     { name = "websockets" },
+]
+
+[package.optional-dependencies]
+cad = [
+    { name = "build123d" },
 ]
 
 [package.dev-dependencies]
@@ -1717,10 +1715,10 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "build123d", specifier = ">=0.10.0" },
+    { name = "build123d", marker = "extra == 'cad'", specifier = ">=0.10.0" },
     { name = "gcode-lib", specifier = ">=1.1.13" },
     { name = "google-genai", specifier = ">=1.54.0" },
-    { name = "mcp", extras = ["cli"], specifier = ">=1.27.0" },
+    { name = "mcp", specifier = ">=1.27.0" },
     { name = "modal", specifier = ">=1.2.0" },
     { name = "paho-mqtt", specifier = ">=2.1.0" },
     { name = "pillow", specifier = ">=12.0.0" },

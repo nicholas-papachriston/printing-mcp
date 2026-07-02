@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import socket
 from pathlib import Path
 from typing import cast
@@ -9,6 +10,7 @@ from .config import BlenderConfig, load_blender_config
 from .types import ErrorType, JsonObject, ToolResult
 
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+LOGGER = logging.getLogger(__name__)
 
 
 class BlenderConnection:
@@ -83,6 +85,7 @@ class BlenderConnection:
     def _receive_json(self, sock: socket.socket) -> JsonObject:
         chunks: list[bytes] = []
         received_bytes = 0
+        last_decode_error: json.JSONDecodeError | None = None
         while True:
             chunk = sock.recv(8192)
             if not chunk:
@@ -95,17 +98,21 @@ class BlenderConnection:
             if received_bytes > MAX_RESPONSE_BYTES:
                 raise ValueError("Blender response exceeded the MCP size limit.")
 
-            try:
-                decoded = b"".join(chunks).decode("utf-8")
-                data: object = json.loads(decoded)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(data, dict):
-                raise ValueError("Blender returned a non-object JSON response.")
-            return cast(JsonObject, data)
+            decoded = b"".join(chunks).decode("utf-8")
+            data, decode_error = _try_parse_json(decoded)
+            if decode_error is None:
+                if not isinstance(data, dict):
+                    raise ValueError("Blender returned a non-object JSON response.")
+                return cast(JsonObject, data)
+            last_decode_error = decode_error
 
         decoded = b"".join(chunks).decode("utf-8")
-        data = json.loads(decoded)
+        try:
+            data = json.loads(decoded)
+        except json.JSONDecodeError as error:
+            if last_decode_error is not None:
+                raise last_decode_error from error
+            raise
         if not isinstance(data, dict):
             raise ValueError("Blender returned a non-object JSON response.")
         return cast(JsonObject, data)
@@ -119,6 +126,14 @@ class BlenderConnection:
             message=message,
             suggestions=suggestions,
         )
+
+
+def _try_parse_json(value: str) -> tuple[object | None, json.JSONDecodeError | None]:
+    try:
+        return json.loads(value), None
+    except json.JSONDecodeError as error:
+        LOGGER.debug("Waiting for more Blender JSON response bytes: %s", error)
+        return None, error
 
 
 class BlenderRunner:

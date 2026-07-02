@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import hashlib
 import json
-import random
+import logging
+import secrets
+import select
 import socket
 import threading
 import time
 import uuid
+from collections.abc import Mapping
 from http.client import HTTPConnection, HTTPException
 from pathlib import Path
 from typing import cast
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 from urllib.request import Request, urlopen
 
 import paho.mqtt.client as mqtt
@@ -23,6 +26,7 @@ from .types import (
     ElegooPrinterInfo,
     ElegooPrinterRequest,
     ElegooStartPrintRequest,
+    ElegooUploadAndStartRequest,
     ElegooUploadRequest,
     ErrorType,
     JsonObject,
@@ -44,6 +48,7 @@ ELEGOO_LINK_USER_AGENT = "ElegooLink/1.0"
 MAX_DATAGRAM_BYTES = 65535
 CC2_DISCOVERY_PAYLOAD = b'{"id":0,"method":7000}'
 CC_DISCOVERY_PAYLOAD = b"M99999"
+LOGGER = logging.getLogger(__name__)
 
 
 class ElegooLanRunner:
@@ -153,12 +158,27 @@ class ElegooLanRunner:
 
     def upload_and_start_print(
         self,
-        upload_request: ElegooUploadRequest,
-        start_request: ElegooStartPrintRequest,
+        request: ElegooUploadAndStartRequest,
     ) -> ToolResult:
-        upload_result = self.upload(upload_request)
+        upload_result = self.upload(request)
         if not upload_result.ok:
             return upload_result
+        uploaded_file_name = _uploaded_file_name(upload_result, request)
+        start_request = ElegooStartPrintRequest(
+            host=request.host,
+            printer_type=request.printer_type,
+            access_code=request.access_code,
+            serial_number=request.serial_number,
+            mainboard_id=request.mainboard_id,
+            timeout_seconds=request.timeout_seconds,
+            file_name=uploaded_file_name,
+            storage=request.storage,
+            bed_type=request.bed_type,
+            time_lapse=request.time_lapse,
+            heated_bed_leveling=request.heated_bed_leveling,
+            bed_level_force=request.bed_level_force,
+            slot_map=request.slot_map,
+        )
         start_result = self.start_print(start_request)
         start_data = start_result.data or {}
         start_data["upload"] = upload_result.model_dump(mode="json")
@@ -166,69 +186,49 @@ class ElegooLanRunner:
         return start_result
 
     def pause_print(self, request: ElegooPrinterRequest) -> ToolResult:
-        target = self._target(request)
-        if isinstance(target, ToolResult):
-            return target
-        if target.printer_type == "cc2":
-            return self._cc2_command(
-                target,
-                method=1021,
-                params={},
-                access_code=self._access_code(request),
-                timeout_seconds=request.timeout_seconds,
-            )
-        if target.printer_type == "cc":
-            return self._cc_command(target, command=129, data={})
-        return self._unsupported_printer_type(target.printer_type)
+        return self._print_control_command(request, cc2_method=1021, cc_command=129)
 
     def resume_print(self, request: ElegooPrinterRequest) -> ToolResult:
-        target = self._target(request)
-        if isinstance(target, ToolResult):
-            return target
-        if target.printer_type == "cc2":
-            return self._cc2_command(
-                target,
-                method=1023,
-                params={},
-                access_code=self._access_code(request),
-                timeout_seconds=request.timeout_seconds,
-                fallback_sdcp_command=131,
-            )
-        if target.printer_type == "cc":
-            return self._cc_command(target, command=131, data={})
-        return self._unsupported_printer_type(target.printer_type)
+        return self._print_control_command(
+            request,
+            cc2_method=1023,
+            cc_command=131,
+            fallback_sdcp_command=131,
+        )
 
     def cancel_print(self, request: ElegooPrinterRequest) -> ToolResult:
-        target = self._target(request)
-        if isinstance(target, ToolResult):
-            return target
-        if target.printer_type == "cc2":
-            return self._cc2_command(
-                target,
-                method=1022,
-                params={},
-                access_code=self._access_code(request),
-                timeout_seconds=request.timeout_seconds,
-                fallback_sdcp_command=130,
-            )
-        if target.printer_type == "cc":
-            return self._cc_command(target, command=130, data={})
-        return self._unsupported_printer_type(target.printer_type)
+        return self._print_control_command(
+            request,
+            cc2_method=1022,
+            cc_command=130,
+            fallback_sdcp_command=130,
+        )
 
     def stop_print(self, request: ElegooPrinterRequest) -> ToolResult:
+        return self._print_control_command(request, cc2_method=1022, cc_command=130)
+
+    def _print_control_command(
+        self,
+        request: ElegooPrinterRequest,
+        *,
+        cc2_method: int,
+        cc_command: int,
+        fallback_sdcp_command: int | None = None,
+    ) -> ToolResult:
         target = self._target(request)
         if isinstance(target, ToolResult):
             return target
         if target.printer_type == "cc2":
             return self._cc2_command(
                 target,
-                method=1022,
+                method=cc2_method,
                 params={},
                 access_code=self._access_code(request),
                 timeout_seconds=request.timeout_seconds,
+                fallback_sdcp_command=fallback_sdcp_command,
             )
         if target.printer_type == "cc":
-            return self._cc_command(target, command=130, data={})
+            return self._cc_command(target, command=cc_command, data={})
         return self._unsupported_printer_type(target.printer_type)
 
     def load_filament(self, request: ElegooPrinterRequest) -> ToolResult:
@@ -286,19 +286,21 @@ class ElegooLanRunner:
         deadline = time.monotonic() + timeout_seconds
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            sock.settimeout(0.5)
             sock.bind(("", 0))
             sock.sendto(payload, ("255.255.255.255", port))
             while time.monotonic() < deadline:
-                try:
-                    data, address = sock.recvfrom(MAX_DATAGRAM_BYTES)
-                except TimeoutError:
-                    continue
-                except OSError:
-                    break
-                printer = self._parse_discovery_response(port, address[0], data)
-                if printer is not None and printer.network_mode == "lan":
-                    discovered.append(printer)
+                readable, _, _ = select.select(
+                    [sock], [], [], min(0.5, deadline - time.monotonic())
+                )
+                if readable:
+                    try:
+                        data, address = sock.recvfrom(MAX_DATAGRAM_BYTES)
+                    except OSError as error:
+                        LOGGER.debug("Stopping Elegoo discovery on socket error: %s", error)
+                        return discovered
+                    printer = self._parse_discovery_response(port, address[0], data)
+                    if printer is not None and printer.network_mode == "lan":
+                        discovered.append(printer)
         return discovered
 
     def _parse_discovery_response(
@@ -386,7 +388,16 @@ class ElegooLanRunner:
         )
 
     def _access_code(self, request: ElegooPrinterRequest) -> str:
-        return request.access_code or self.config.access_code or DEFAULT_ACCESS_TOKEN
+        if request.access_code:
+            return request.access_code
+        if self.config.access_code:
+            return self.config.access_code
+        if self.config.use_default_access_code:
+            return DEFAULT_ACCESS_TOKEN
+        raise ValueError(
+            "CC2 access_code is required. Pass access_code, set ELEGOO_ACCESS_CODE, "
+            "or explicitly opt into the factory default with ELEGOO_USE_DEFAULT_ACCESS_CODE=1."
+        )
 
     def _cc2_command(
         self,
@@ -427,6 +438,13 @@ class ElegooLanRunner:
                 ["Check the printer IP, LAN mode, and access code."],
             )
 
+        validation_error = _cc2_response_validation_error(response)
+        if validation_error is not None:
+            return _error(
+                "backend_error",
+                f"CC2 rejected MQTT method {method}: {validation_error}",
+                ["Check the printer state and retry from the touchscreen or LAN UI first."],
+            )
         return ToolResult(ok=True, backend="elegoo", data={"response": response})
 
     def _cc2_fetch_serial(self, host: str, access_code: str) -> ToolResult:
@@ -465,7 +483,7 @@ class ElegooLanRunner:
                 ["Use elegoo_discover_lan_printers and pass the discovered mainboard_id."],
             )
 
-        request_id = str(random.randint(1000, 999999))
+        request_id = str(_request_number())
         payload: JsonObject = {
             "Id": mainboard_id,
             "Topic": "",
@@ -492,7 +510,18 @@ class ElegooLanRunner:
                 ["Check the printer IP and LAN mode."],
             )
 
-        return ToolResult(ok=True, backend="elegoo", data={"response": _parse_json(raw_response)})
+        response_payload = _parse_json(raw_response)
+        if not isinstance(response_payload, dict) or "raw" in response_payload:
+            return _error(
+                "backend_error",
+                "Centauri WebSocket returned invalid or non-object JSON.",
+                ["Check the printer LAN mode and retry the command."],
+            )
+        return ToolResult(
+            ok=True,
+            backend="elegoo",
+            data={"response": cast(JsonObject, response_payload)},
+        )
 
     def _cc2_upload(
         self,
@@ -653,7 +682,7 @@ class _Cc2MqttSession:
         self.host = host
         self.serial_number = serial_number
         self.timeout_seconds = timeout_seconds
-        self.client_id = f"1_PC_{random.randint(1000, 9999)}"
+        self.client_id = f"1_PC_{_client_number()}"
         self.request_id = f"{self.client_id}_req"
         self.responses: dict[int, JsonObject] = {}
         self.last_status: JsonObject | None = None
@@ -688,7 +717,7 @@ class _Cc2MqttSession:
         *,
         fallback_sdcp_command: int | None = None,
     ) -> JsonObject:
-        request_id = random.randint(1000, 999999)
+        request_id = _request_number()
         event = threading.Event()
         self.response_events[request_id] = event
         payload: JsonObject = {"id": request_id, "method": method, "params": params}
@@ -820,6 +849,14 @@ def _remote_file_name(file_name: str | None, remote_path: str | None, file_path:
     return Path(normalized).name
 
 
+def _uploaded_file_name(upload_result: ToolResult, request: ElegooUploadAndStartRequest) -> str:
+    if upload_result.data is not None:
+        uploaded_name = upload_result.data.get("file_name")
+        if isinstance(uploaded_name, str) and uploaded_name.strip():
+            return uploaded_name
+    return _remote_file_name(request.file_name, request.remote_path, Path(request.file_path))
+
+
 def _cc_start_data(request: ElegooStartPrintRequest) -> JsonObject:
     return {
         "Filename": request.file_name,
@@ -933,9 +970,15 @@ def _http_json(
     timeout: float,
 ) -> ToolResult:
     safe_url = _redact_url(url)
+    if urlparse(url).scheme != "http":
+        return _error(
+            "invalid_request",
+            f"Unsupported LAN printer URL scheme for {safe_url}.",
+            ["Elegoo LAN HTTP requests must use http:// printer URLs."],
+        )
     request = Request(url, data=data, headers=headers or {}, method=method)
     try:
-        with urlopen(request, timeout=timeout) as response:
+        with urlopen(request, timeout=timeout) as response:  # nosec B310 - scheme checked above.
             body = response.read()
     except HTTPError as error:
         return _error(
@@ -962,6 +1005,50 @@ def _http_json(
             ["Set ELEGOO_ACCESS_CODE or pass access_code for printers that require LAN auth."],
         )
     return ToolResult(ok=True, backend="elegoo", data=cast(JsonObject, payload))
+
+
+def _request_number() -> int:
+    return 1000 + secrets.randbelow(999000)
+
+
+def _client_number() -> int:
+    return 1000 + secrets.randbelow(9000)
+
+
+def _cc2_response_validation_error(response: JsonObject) -> str | None:
+    top_level_error = _response_error_text(response)
+    if top_level_error is not None:
+        return top_level_error
+
+    top_level_code = _response_error_code(response)
+    if top_level_code is not None:
+        return f"code={top_level_code}"
+
+    result = response.get("result")
+    if isinstance(result, dict):
+        result_error = _response_error_text(result)
+        if result_error is not None:
+            return result_error
+        result_code = _response_error_code(result)
+        if result_code is not None:
+            return f"result.code={result_code}"
+    return None
+
+
+def _response_error_text(value: Mapping[str, object]) -> str | None:
+    for key in ("error", "err_msg", "error_message"):
+        raw_error = value.get(key)
+        if isinstance(raw_error, str) and raw_error.strip() and raw_error.strip().lower() != "ok":
+            return raw_error.strip()
+    return None
+
+
+def _response_error_code(value: Mapping[str, object]) -> object | None:
+    for key in ("code", "error_code", "result_code", "ret"):
+        raw_code = value.get(key)
+        if raw_code not in (None, 0, "0", "000000", "ok", "OK"):
+            return raw_code
+    return None
 
 
 def _decode_body_excerpt(body: bytes) -> str:

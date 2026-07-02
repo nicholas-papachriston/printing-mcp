@@ -5,10 +5,12 @@ import time
 from pathlib import Path
 
 from ..types import ToolResult
-from .files import append_generation_call, default_record_path, resolve_generation_path
+from .files import append_generation_call, resolve_generation_path, resolve_generation_record_path
+from .results import generation_failure
 from .schemas import GenerationRemoveBackgroundRequest
 
 SUPPORTED_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+BACKGROUND_RETRYABLE_ERRORS = {"background_timeout", "output_write_failed"}
 
 
 class GenerationBackgroundRunner:
@@ -31,16 +33,11 @@ class GenerationBackgroundRunner:
             request.output_path,
             label="output_path",
         )
-        record_path = (
-            resolve_generation_path(
-                self.workspace_root,
-                request.model_name,
-                request.version,
-                request.record_path,
-                label="record_path",
-            )
-            if request.record_path is not None
-            else default_record_path(self.workspace_root, request.model_name, request.version)
+        record_path = resolve_generation_record_path(
+            self.workspace_root,
+            request.model_name,
+            request.version,
+            request.record_path,
         )
 
         if not source_path.is_file():
@@ -52,13 +49,13 @@ class GenerationBackgroundRunner:
             )
         if output_path.exists() and not request.force:
             return self._failure("output_exists", f"Output already exists: {output_path}")
-        if time.monotonic() - start > request.timeout_seconds:
-            return self._failure("background_timeout", "Background removal timed out.")
-
         output_path.parent.mkdir(parents=True, exist_ok=True)
         temp_path = output_path.with_suffix(output_path.suffix + ".tmp")
         try:
             shutil.copyfile(source_path, temp_path)
+            if time.monotonic() - start > request.timeout_seconds:
+                temp_path.unlink(missing_ok=True)
+                return self._failure("background_timeout", "Background removal timed out.")
             temp_path.replace(output_path)
             append_generation_call(
                 record_path,
@@ -93,15 +90,9 @@ class GenerationBackgroundRunner:
         )
 
     def _failure(self, error_code: str, message: str) -> ToolResult:
-        return ToolResult(
-            ok=False,
-            backend="generation",
-            error_type="backend_error",
-            message=message,
-            data={
-                "status": "failed" if error_code != "background_timeout" else "timeout",
-                "error_code": error_code,
-                "message": message,
-                "retryable": error_code in {"background_timeout", "output_write_failed"},
-            },
+        return generation_failure(
+            error_code,
+            message,
+            retryable_codes=BACKGROUND_RETRYABLE_ERRORS,
+            status="timeout" if error_code == "background_timeout" else "failed",
         )

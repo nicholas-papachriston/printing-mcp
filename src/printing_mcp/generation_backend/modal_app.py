@@ -4,15 +4,22 @@ import argparse
 import base64
 import importlib
 import json
+import logging
 import sys
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
 
 ParseTargetSizeFn = Callable[[str], tuple[float, float, float]]
 RunFastSmokeFn = Callable[..., Any]
+CreateTriposrMeshFromBase64Fn = Callable[[dict[str, Any]], dict[str, Any]]
 parse_target_size_fn: ParseTargetSizeFn | None = None
 run_fast_smoke_fn: RunFastSmokeFn | None = None
+create_triposr_mesh_from_base64_fn: CreateTriposrMeshFromBase64Fn | None = None
+standalone_import_error: ModuleNotFoundError | None = None
+DEFAULT_SMOKE_OUTPUT_DIR = str(Path(tempfile.gettempdir()) / "printing-generation-smoke")  # nosec B108
+LOGGER = logging.getLogger(__name__)
 
 if __package__ in {None, ""}:
     resolved_path = Path(__file__).resolve()
@@ -23,17 +30,26 @@ if __package__ in {None, ""}:
             parse_target_size as imported_parse_target_size,
         )
         from printing_mcp.generation_backend.smoke import run_fast_smoke as imported_run_fast_smoke
+        from printing_mcp.generation_backend.triposr_runner import (
+            create_triposr_mesh_from_base64 as imported_create_triposr_mesh_from_base64,
+        )
 
         parse_target_size_fn = imported_parse_target_size
         run_fast_smoke_fn = imported_run_fast_smoke
-    except ModuleNotFoundError:
-        pass
+        create_triposr_mesh_from_base64_fn = imported_create_triposr_mesh_from_base64
+    except ModuleNotFoundError as error:
+        LOGGER.debug("Standalone modal_app import fallback failed: %s", error)
+        standalone_import_error = error
 else:
     from .smoke import parse_target_size as imported_parse_target_size
     from .smoke import run_fast_smoke as imported_run_fast_smoke
+    from .triposr_runner import (
+        create_triposr_mesh_from_base64 as imported_create_triposr_mesh_from_base64,
+    )
 
     parse_target_size_fn = imported_parse_target_size
     run_fast_smoke_fn = imported_run_fast_smoke
+    create_triposr_mesh_from_base64_fn = imported_create_triposr_mesh_from_base64
 
 APP_NAME = "printing-generation"
 HF_CACHE_VOLUME = "printing-generation-hf-cache"
@@ -175,7 +191,7 @@ if app is not None:
         mode: str = "fast",
         prompt: str = "single small rounded gecko cave hide, one object, white background",
         target_size_mm: str = "80,60,45",
-        output_dir: str = "/tmp/printing-generation-smoke",
+        output_dir: str = DEFAULT_SMOKE_OUTPUT_DIR,
         max_cost_usd: float = 0.25,
         real: bool = False,
     ) -> None:
@@ -264,6 +280,10 @@ def run_smoke_cli(
 def _parse_target_size(value: str) -> tuple[float, float, float]:
     if parse_target_size_fn is not None:
         return parse_target_size_fn(value)
+    if standalone_import_error is not None:
+        raise RuntimeError(
+            "Could not import printing_mcp smoke helpers."
+        ) from standalone_import_error
     parts = [part.strip() for part in value.split(",")]
     if len(parts) != 3:
         raise ValueError("target size must contain exactly three comma-separated values.")
@@ -281,111 +301,11 @@ def _write_placeholder_png_remote(path: Path) -> None:
 
 
 def _create_triposr_mesh_from_base64_remote(request: dict[str, Any]) -> dict[str, Any]:
-    import tempfile
-    import time
-
-    from PIL import Image
-
-    np = _import_required_remote("numpy")
-    torch = _import_required_remote("torch")
-    trimesh = _import_required_remote("trimesh")
-    TSR = _import_required_remote("tsr.system").TSR
-    image_b64 = request.get("image_b64")
-    if not isinstance(image_b64, str) or not image_b64:
-        raise ValueError("image_b64 is required.")
-    raw_target = request.get("target_size_mm")
-    if not isinstance(raw_target, list | tuple) or len(raw_target) != 3:
-        raise ValueError("target_size_mm must contain exactly three values.")
-    target_size_mm = np.array(
-        [float(raw_target[0]), float(raw_target[1]), float(raw_target[2])],
-        dtype=float,
-    )
-    max_cost_usd = float(request.get("max_cost_usd", 0.08))
-    seed = request.get("seed")
-    if seed is not None:
-        torch.manual_seed(int(seed))
-        np.random.seed(int(seed) % (2**32 - 1))
-
-    start = time.monotonic()
-    with tempfile.TemporaryDirectory(prefix="printing-triposr-") as temp_dir_name:
-        temp_dir = Path(temp_dir_name)
-        input_path = temp_dir / "input.png"
-        raw_stl = temp_dir / "mesh.stl"
-        raw_glb = temp_dir / "mesh.glb"
-        input_path.write_bytes(base64.b64decode(image_b64))
-
-        image = Image.open(input_path).convert("RGB")
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        model = TSR.from_pretrained(
-            "stabilityai/TripoSR",
-            config_name="config.yaml",
-            weight_name="model.ckpt",
-        )
-        model.renderer.set_chunk_size(8192)
-        model.to(device)
-        with torch.no_grad():
-            scene_codes = model([image], device=device)
-            meshes = model.extract_mesh(scene_codes, has_vertex_color=False)
-        mesh = meshes[0]
-        if isinstance(mesh, trimesh.Scene):
-            converted = mesh.dump(concatenate=True)
-            if converted is None:
-                raise ValueError("mesh_empty: TripoSR produced an empty scene.")
-            mesh = converted
-        if not isinstance(mesh, trimesh.Trimesh):
-            mesh = trimesh.Trimesh(vertices=mesh.vertices, faces=mesh.faces, process=False)
-        mesh.remove_unreferenced_vertices()
-        if mesh.vertices.size == 0 or mesh.faces.size == 0:
-            raise ValueError("mesh_empty: TripoSR produced no vertices or faces.")
-
-        bounds = mesh.bounds
-        size = bounds[1] - bounds[0]
-        if np.any(size <= 0):
-            raise ValueError("mesh_empty: TripoSR mesh has invalid bounds.")
-        scale_factor = float(np.min(target_size_mm / size))
-        mesh.apply_scale(scale_factor)
-        bounds = mesh.bounds
-        center_xy = (bounds[0][:2] + bounds[1][:2]) / 2.0
-        mesh.apply_translation(np.array([-center_xy[0], -center_xy[1], -bounds[0][2]]))
-        mesh.export(raw_stl)
-        mesh.export(raw_glb)
-
-        bounds = mesh.bounds
-        actual_size_mm = (bounds[1] - bounds[0]).tolist()
-        triangle_count = int(len(mesh.faces))
-        if triangle_count <= 12:
-            raise ValueError("mesh_empty: TripoSR produced an unexpectedly small mesh.")
-        manifest = {
-            "schema_version": 1,
-            "mode": "fast",
-            "dry_run": False,
-            "provider": "modal",
-            "seed": seed,
-            "target_size_mm": target_size_mm.tolist(),
-            "actual_size_mm": [round(float(value), 4) for value in actual_size_mm],
-            "scale_factor": scale_factor,
-            "units": "mm",
-            "triangle_count": triangle_count,
-            "elapsed_seconds": round(time.monotonic() - start, 3),
-            "estimated_cost_usd": max_cost_usd,
-            "image_model": "nano_banana_2",
-            "image_model_id": "gemini-3.1-flash-image-preview",
-            "image_model_revision": "preview",
-            "mesh_model": "triposr",
-            "mesh_model_id": "stabilityai/TripoSR",
-            "mesh_model_revision": "main",
-            "mesh_source": "https://github.com/VAST-AI-Research/TripoSR",
-            "mesh_source_commit": "main",
-        }
-        return {
-            "raw_stl_b64": base64.b64encode(raw_stl.read_bytes()).decode("ascii"),
-            "raw_glb_b64": base64.b64encode(raw_glb.read_bytes()).decode("ascii"),
-            "manifest": manifest,
-        }
-
-
-def _import_required_remote(module_name: str) -> Any:
-    return importlib.import_module(module_name)
+    if create_triposr_mesh_from_base64_fn is None:
+        raise RuntimeError(
+            "TripoSR backend runner is not importable in the Modal environment."
+        ) from standalone_import_error
+    return create_triposr_mesh_from_base64_fn(request)
 
 
 if __name__ == "__main__":

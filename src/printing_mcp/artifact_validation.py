@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from typing import Any, cast
 
 from .files import resolve_existing_file
@@ -16,6 +16,12 @@ from .types import (
 
 TEMP_COMMAND_RE = re.compile(r"\b(M104|M109|M140|M190)\b(?P<params>[^;\n]*)")
 TEMP_VALUE_RE = re.compile(r"\bS(-?\d+(?:\.\d+)?)\b")
+
+
+@dataclass(frozen=True)
+class ComponentCountResult:
+    count: int | None
+    error: str | None = None
 
 
 def validate_mesh_artifact(request: MeshArtifactValidationRequest) -> ToolResult:
@@ -50,7 +56,8 @@ def validate_mesh_artifact(request: MeshArtifactValidationRequest) -> ToolResult
 
     bounds = _mesh_bounds(mesh)
     dimensions_mm = cast(list[float | None], bounds["dimensions_mm"])
-    component_count = _component_count(mesh)
+    component_result = _component_count(mesh)
+    component_count = component_result.count
     volume_mm3 = _safe_float(getattr(mesh, "volume", None))
     face_count = int(len(getattr(mesh, "faces", [])))
     vertex_count = int(len(getattr(mesh, "vertices", [])))
@@ -67,8 +74,11 @@ def validate_mesh_artifact(request: MeshArtifactValidationRequest) -> ToolResult
         issues.append("Mesh is not watertight.")
     if request.require_positive_volume and (volume_mm3 is None or abs(volume_mm3) <= 0):
         issues.append("Mesh does not report a positive non-zero volume.")
-    if request.require_single_component and component_count != 1:
-        issues.append(f"Mesh has {component_count} connected components.")
+    if request.require_single_component:
+        if component_count is None:
+            issues.append("Mesh connected component count could not be determined.")
+        elif component_count != 1:
+            issues.append(f"Mesh has {component_count} connected components.")
     if request.max_faces is not None and face_count > request.max_faces:
         issues.append(f"Mesh has {face_count} faces, above max_faces={request.max_faces}.")
     if not _fits_bed(dimensions_mm, request.bed_size_mm):
@@ -86,7 +96,9 @@ def validate_mesh_artifact(request: MeshArtifactValidationRequest) -> ToolResult
         warnings.append(
             "Mesh winding is not consistent; slicer repairs may change surface normals."
         )
-    if component_count > 1 and not request.require_single_component:
+    if component_result.error is not None:
+        warnings.append(f"Could not determine connected component count: {component_result.error}")
+    if component_count is not None and component_count > 1 and not request.require_single_component:
         warnings.append(f"Mesh has {component_count} components; confirm this is intentional.")
 
     data: JsonObject = {
@@ -96,6 +108,7 @@ def validate_mesh_artifact(request: MeshArtifactValidationRequest) -> ToolResult
             "vertices": vertex_count,
             "faces": face_count,
             "components": component_count,
+            "components_error": component_result.error,
             "is_empty": is_empty,
             "is_watertight": is_watertight,
             "is_winding_consistent": is_winding_consistent,
@@ -280,11 +293,11 @@ def _mesh_bounds(mesh: Any) -> JsonObject:
     }
 
 
-def _component_count(mesh: Any) -> int:
+def _component_count(mesh: Any) -> ComponentCountResult:
     try:
-        return len(mesh.split(only_watertight=False))
-    except Exception:
-        return 0
+        return ComponentCountResult(count=len(mesh.split(only_watertight=False)))
+    except Exception as error:
+        return ComponentCountResult(count=None, error=str(error))
 
 
 def _fits_bed(dimensions_mm: list[float | None], bed_size_mm: tuple[float, float, float]) -> bool:

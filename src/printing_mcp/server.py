@@ -24,6 +24,7 @@ from .elegoo import ElegooLanRunner
 from .files import resolve_output_dir, resolve_parent_for_output
 from .generation.backend_client import GenerationBackendClient
 from .generation.background import GenerationBackgroundRunner
+from .generation.dependencies import GenerationDependencies
 from .generation.image import GenerationImageRunner
 from .generation.jobs import GenerationJobStore
 from .generation.mesh import GenerationMeshRunner
@@ -39,6 +40,7 @@ from .orca import OrcaRunner
 from .types import (
     BackendStatus,
     BlenderBootstrapModelRequest,
+    BlenderCodeRequest,
     BlenderExportStlRequest,
     BlenderPrintabilityReviewRequest,
     BlenderValidateObjectRequest,
@@ -56,8 +58,10 @@ from .types import (
     InspectModelRequest,
     JsonObject,
     MeshArtifactValidationRequest,
+    ObjectInfoRequest,
     SliceRequest,
     ToolResult,
+    ViewportScreenshotRequest,
 )
 
 T = TypeVar("T", bound=BaseModel)
@@ -70,16 +74,13 @@ elegoo_runner = ElegooLanRunner()
 generation_background_runner = GenerationBackgroundRunner(WORKSPACE_ROOT)
 generation_backend_client = GenerationBackendClient()
 generation_job_store = GenerationJobStore()
-generation_image_runner = GenerationImageRunner(
+generation_dependencies = GenerationDependencies(
     workspace_root=WORKSPACE_ROOT,
     backend_client=generation_backend_client,
     job_store=generation_job_store,
 )
-generation_mesh_runner = GenerationMeshRunner(
-    workspace_root=WORKSPACE_ROOT,
-    backend_client=generation_backend_client,
-    job_store=generation_job_store,
-)
+generation_image_runner = GenerationImageRunner(generation_dependencies)
+generation_mesh_runner = GenerationMeshRunner(dependencies=generation_dependencies)
 orca_runner = OrcaRunner()
 last_result: ToolResult | CommandResult | None = None
 
@@ -230,15 +231,14 @@ def blender_get_capabilities() -> JsonObject:
 
 
 @mcp.tool()
-def blender_get_object_info(object_name: str) -> JsonObject:
+def blender_get_object_info(request: ObjectInfoRequest) -> JsonObject:
     """Get transform, dimensions, materials, and mesh stats for one Blender object.
 
-    Example: {"object_name": "fairy_castle_gecko_hide"}
+    Example: {"request": {"object_name": "fairy_castle_gecko_hide"}}
     """
 
-    if not object_name.strip():
-        raise ValueError("object_name must not be empty.")
-    return _run_tool(lambda: blender_runner.get_object_info(object_name))
+    validated = _coerce(ObjectInfoRequest, request)
+    return _run_tool(lambda: blender_runner.get_object_info(validated.object_name))
 
 
 @mcp.tool()
@@ -350,7 +350,7 @@ def blender_bootstrap_model(request: BlenderBootstrapModelRequest) -> JsonObject
 
 
 @mcp.tool()
-def blender_execute_code(code: str, timeout_seconds: float | None = None) -> JsonObject:
+def blender_execute_code(request: BlenderCodeRequest) -> JsonObject:
     """Execute Python code in Blender through the local bridge.
 
     For geometry creation or edits, write the code to the model version's
@@ -360,34 +360,37 @@ def blender_execute_code(code: str, timeout_seconds: float | None = None) -> Jso
     `__name__` to `"__main__"` and `__file__` to the script path.
     """
 
-    if not code.strip():
-        raise ValueError("code must not be empty.")
-    return _run_tool(lambda: blender_runner.execute_code(code, timeout_seconds=timeout_seconds))
+    validated = _coerce(BlenderCodeRequest, request)
+    return _run_tool(
+        lambda: blender_runner.execute_code(
+            validated.code,
+            timeout_seconds=validated.timeout_seconds,
+        )
+    )
 
 
 @mcp.tool()
-def blender_get_viewport_screenshot(max_size: int = 800) -> object:
+def blender_get_viewport_screenshot(request: ViewportScreenshotRequest | None = None) -> object:
     """Return the current Blender 3D viewport as a PNG image.
 
     For multi-angle saved screenshots, prefer blender_review_visuals. Example:
-    {"max_size": 1200}
+    {"request": {"max_size": 1200}}
     """
 
-    if not 100 <= max_size <= 4096:
-        return _record(
-            ToolResult(
-                ok=False,
-                backend="blender",
-                error_type="invalid_request",
-                message="max_size must be between 100 and 4096 pixels.",
-            )
-        )
+    validated = (
+        ViewportScreenshotRequest()
+        if request is None
+        else _coerce(ViewportScreenshotRequest, request)
+    )
 
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
         screenshot_path = Path(temp_file.name)
 
     try:
-        result = blender_runner.capture_viewport_screenshot(screenshot_path, max_size=max_size)
+        result = blender_runner.capture_viewport_screenshot(
+            screenshot_path,
+            max_size=validated.max_size,
+        )
         if not result.ok:
             return _record(result)
         if not screenshot_path.is_file():
@@ -476,8 +479,8 @@ def generation_create_image(request: GenerationCreateImageRequest) -> JsonObject
     """Create a source image from a prompt for the generation pipeline.
 
     Uses Nano Banana 2 through Google GenAI when GEMINI_API_KEY/GOOGLE_API_KEY is
-    configured; otherwise writes a deterministic placeholder PNG. The call is
-    synchronous and returns a completed job with provenance recorded.
+    configured. Placeholder image output requires PRINTING_GENERATION_DRY_RUN=1.
+    The call is synchronous and returns a completed job with provenance recorded.
     """
 
     validated = _coerce(GenerationCreateImageRequest, request)
@@ -499,7 +502,7 @@ def generation_create_mesh(request: GenerationCreateMeshRequest) -> JsonObject:
 
 @mcp.tool()
 def generation_get_job(request: GenerationGetJobRequest) -> JsonObject:
-    """Return a generation job result, optionally waiting for a non-terminal job."""
+    """Return a stored terminal generation job result by compatibility job ID."""
 
     validated = _coerce(GenerationGetJobRequest, request)
     return _run_tool(lambda: generation_mesh_runner.get_job(validated))
@@ -507,7 +510,7 @@ def generation_get_job(request: GenerationGetJobRequest) -> JsonObject:
 
 @mcp.tool()
 def generation_cancel_job(request: GenerationCancelJobRequest) -> JsonObject:
-    """Cancel a queued or running generation job when possible."""
+    """Report that returned synchronous generation jobs are not cancellable."""
 
     validated = _coerce(GenerationCancelJobRequest, request)
     return _run_tool(lambda: generation_mesh_runner.cancel_job(validated))
@@ -520,12 +523,14 @@ def elegoo_discover_lan_printers(request: ElegooDiscoveryRequest | None = None) 
     Example: {"request": {"timeout_seconds": 8, "include_cc2": true, "include_cc": true}}
     """
 
-    request = request or ElegooDiscoveryRequest()
+    validated = (
+        ElegooDiscoveryRequest() if request is None else _coerce(ElegooDiscoveryRequest, request)
+    )
     return _run_tool(
         lambda: elegoo_runner.discover(
-            request.timeout_seconds,
-            include_cc2=request.include_cc2,
-            include_cc=request.include_cc,
+            validated.timeout_seconds,
+            include_cc2=validated.include_cc2,
+            include_cc=validated.include_cc,
         )
     )
 
@@ -570,24 +575,9 @@ def elegoo_upload_and_start_print(request: ElegooUploadAndStartRequest) -> JsonO
     {"request": {"host": "192.168.1.50", "printer_type": "cc2", "file_path": "/tmp/model.gcode"}}
     """
 
-    upload = _coerce(ElegooUploadAndStartRequest, request)
-    file_name = upload.remote_path or upload.file_name or Path(upload.file_path).name
-    start = ElegooStartPrintRequest(
-        host=upload.host,
-        printer_type=upload.printer_type,
-        access_code=upload.access_code,
-        serial_number=upload.serial_number,
-        mainboard_id=upload.mainboard_id,
-        timeout_seconds=upload.timeout_seconds,
-        file_name=file_name,
-        storage=upload.storage,
-        bed_type=upload.bed_type,
-        time_lapse=upload.time_lapse,
-        heated_bed_leveling=upload.heated_bed_leveling,
-        bed_level_force=upload.bed_level_force,
-        slot_map=upload.slot_map,
+    return _run_tool(
+        lambda: elegoo_runner.upload_and_start_print(_coerce(ElegooUploadAndStartRequest, request))
     )
-    return _run_tool(lambda: elegoo_runner.upload_and_start_print(upload, start))
 
 
 @mcp.tool()
@@ -738,6 +728,7 @@ def config_resource() -> str:
             "discovery_timeout_seconds": config.elegoo.discovery_timeout_seconds,
             "upload_chunk_bytes": config.elegoo.upload_chunk_bytes,
             "access_code_configured": config.elegoo.access_code is not None,
+            "default_access_code_enabled": config.elegoo.use_default_access_code,
             "config_issue": config.elegoo.config_issue,
         },
         "orcaslicer": {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
@@ -13,6 +14,13 @@ DISCOVERED_SUFFIXES = {
     ".json": "json",
     ".stl": "stl",
 }
+
+
+@dataclass(frozen=True)
+class JsonFileResult:
+    status: str
+    data: JsonObject | None = None
+    error: str | None = None
 
 
 def resolve_existing_file(path: PathLike, *, label: str) -> Path:
@@ -55,14 +63,22 @@ def resolve_parent_for_output(path: PathLike) -> Path:
 
 
 def read_json_file(path: Path) -> JsonObject | None:
+    return read_json_file_result(path).data
+
+
+def read_json_file_result(path: Path) -> JsonFileResult:
     if not path.is_file():
-        return None
+        return JsonFileResult(status="missing", error=f"Result JSON does not exist: {path}")
     try:
         with path.open("r", encoding="utf-8") as file:
             data: object = json.load(file)
-    except (OSError, json.JSONDecodeError):
-        return None
-    return cast(JsonObject, data) if isinstance(data, dict) else None
+    except OSError as error:
+        return JsonFileResult(status="unreadable", error=str(error))
+    except json.JSONDecodeError as error:
+        return JsonFileResult(status="invalid_json", error=str(error))
+    if not isinstance(data, dict):
+        return JsonFileResult(status="non_object", error="Result JSON root is not an object.")
+    return JsonFileResult(status="ok", data=cast(JsonObject, data))
 
 
 def discover_files(paths: list[Path]) -> list[DiscoveredFile]:

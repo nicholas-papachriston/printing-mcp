@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import time
-from pathlib import Path
 from typing import cast
 
 from ..types import JsonObject, ToolResult
-from .backend_client import GenerationBackendClient
 from .cost import estimate_fast_mesh_cost_usd, estimate_warmup_cost_usd
-from .files import append_generation_call, default_record_path, resolve_generation_path
-from .jobs import GenerationJob, GenerationJobStore
+from .dependencies import GenerationDependencies
+from .files import append_generation_call, resolve_generation_path, resolve_generation_record_path
+from .jobs import GenerationJob
+from .results import generation_failure, generation_job_failure
 from .schemas import (
     GenerationCancelJobRequest,
     GenerationCreateMeshRequest,
@@ -17,19 +17,14 @@ from .schemas import (
 )
 
 SUPPORTED_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+MESH_RETRYABLE_ERRORS = {"provider_unavailable", "output_write_failed"}
 
 
 class GenerationMeshRunner:
-    def __init__(
-        self,
-        *,
-        workspace_root: Path,
-        backend_client: GenerationBackendClient,
-        job_store: GenerationJobStore,
-    ) -> None:
-        self.workspace_root = workspace_root
-        self.backend_client = backend_client
-        self.job_store = job_store
+    def __init__(self, *, dependencies: GenerationDependencies) -> None:
+        self.workspace_root = dependencies.workspace_root
+        self.backend_client = dependencies.backend_client
+        self.job_store = dependencies.job_store
 
     def warm_backend(self, request: GenerationWarmBackendRequest) -> ToolResult:
         estimated_cost = estimate_warmup_cost_usd()
@@ -94,16 +89,11 @@ class GenerationMeshRunner:
             if request.output_raw_glb_path is not None
             else None
         )
-        record_path = (
-            resolve_generation_path(
-                self.workspace_root,
-                request.model_name,
-                request.version,
-                request.record_path,
-                label="record_path",
-            )
-            if request.record_path is not None
-            else default_record_path(self.workspace_root, request.model_name, request.version)
+        record_path = resolve_generation_record_path(
+            self.workspace_root,
+            request.model_name,
+            request.version,
+            request.record_path,
         )
 
         if not source_image_path.is_file():
@@ -132,13 +122,14 @@ class GenerationMeshRunner:
                 version=request.version,
                 tool_name="generation_create_mesh",
                 status="completed",
+                provider=request.provider,
                 inputs={
                     "source_image_path": str(source_image_path),
                     "mesh_model": request.mesh_model,
                     "quality": request.quality,
                     "seed": request.seed,
                 },
-                outputs=backend_result,
+                outputs=backend_result.to_record(),
             )
         except (OSError, RuntimeError, ValueError) as error:
             error_code = _mesh_error_code(error)
@@ -166,7 +157,7 @@ class GenerationMeshRunner:
             "output_raw_stl_path": str(output_raw_stl_path),
             "output_raw_glb_path": str(output_raw_glb_path) if output_raw_glb_path else None,
             "record_path": str(record_path),
-            "mesh": backend_result["mesh"],
+            "mesh": backend_result.mesh.to_record(),
             "next_tool": "blender_execute_code",
         }
         self.job_store.set_completed(
@@ -182,11 +173,6 @@ class GenerationMeshRunner:
         job = self.job_store.get(request.job_id)
         if job is None:
             return self._failure("job_not_found", f"No generation job found: {request.job_id}")
-        deadline = time.monotonic() + min(request.wait_seconds, request.timeout_seconds)
-        while (
-            job.status not in {"completed", "cancelled", "failed"} and time.monotonic() < deadline
-        ):
-            time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
         if job.status == "completed":
             return ToolResult(ok=True, backend="generation", data=cast(JsonObject, job.result))
         if job.status == "cancelled":
@@ -200,14 +186,18 @@ class GenerationMeshRunner:
         if job.status == "failed":
             return self._job_failure(job)
         return ToolResult(
-            ok=True,
+            ok=False,
             backend="generation",
+            error_type="backend_error",
+            message=(
+                "Generation create tools currently complete synchronously; non-terminal job "
+                f"state is unexpected: {job.status}."
+            ),
             data={
                 "status": job.status,
                 "job_id": job.job_id,
                 "provider": job.provider,
                 "tool_name": job.tool_name,
-                "next_tool": "generation_get_job",
             },
         )
 
@@ -215,19 +205,12 @@ class GenerationMeshRunner:
         job = self.job_store.get(request.job_id)
         if job is None:
             return self._failure("job_not_found", f"No generation job found: {request.job_id}")
-        if not self.job_store.cancel(job, reason=request.reason):
-            return self._failure("job_already_terminal", f"Job is already {job.status}.")
-        return ToolResult(
-            ok=True,
-            backend="generation",
-            data={
-                "status": "cancelled",
-                "job_id": job.job_id,
-                "provider": job.provider,
-                "tool_name": "generation_cancel_job",
-                "message": request.reason,
-                "record_path": str(job.record_path) if job.record_path else None,
-            },
+        return self._failure(
+            "job_not_cancellable",
+            (
+                "Generation create tools currently complete synchronously; jobs cannot be "
+                f"cancelled after the create call returns. Current status: {job.status}."
+            ),
         )
 
     def _validate_mesh_request(self, request: GenerationCreateMeshRequest) -> ToolResult | None:
@@ -246,32 +229,14 @@ class GenerationMeshRunner:
         return None
 
     def _failure(self, error_code: str, message: str) -> ToolResult:
-        return ToolResult(
-            ok=False,
-            backend="generation",
-            error_type="backend_error",
-            message=message,
-            data={
-                "status": "failed",
-                "error_code": error_code,
-                "message": message,
-                "retryable": error_code in {"provider_unavailable", "output_write_failed"},
-            },
+        return generation_failure(
+            error_code,
+            message,
+            retryable_codes=MESH_RETRYABLE_ERRORS,
         )
 
     def _job_failure(self, job: GenerationJob) -> ToolResult:
-        error = job.error or {
-            "error_code": "provider_job_failed",
-            "message": "Generation job failed.",
-            "retryable": True,
-        }
-        return ToolResult(
-            ok=False,
-            backend="generation",
-            error_type="backend_error",
-            message=str(error["message"]),
-            data=cast(JsonObject, {"status": "failed", "job_id": job.job_id, **error}),
-        )
+        return generation_job_failure(job, default_message="Generation job failed.")
 
 
 def _mesh_error_code(error: Exception) -> str:

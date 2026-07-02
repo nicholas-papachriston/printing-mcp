@@ -26,16 +26,12 @@ PrintStorage = Literal["local", "udisk", "sdcard"]
 
 
 class DiscoveredFile(BaseModel):
-    """File produced or updated by a backend command."""
-
     path: str
     kind: str
     size_bytes: int
 
 
 class ToolResult(BaseModel):
-    """Shared MCP tool result shape."""
-
     ok: bool
     backend: BackendName | None = None
     error_type: ErrorType | None = None
@@ -57,45 +53,35 @@ class CommandResult(ToolResult):
     timeout_seconds: float | None = None
     generated_files: list[DiscoveredFile] = Field(default_factory=list)
     result_json: JsonObject | None = None
+    result_json_status: str | None = None
+    result_json_error: str | None = None
 
 
 class ElegooSlotMapEntry(BaseModel):
-    """CANVAS/MMS filament slot mapping for Elegoo start-print requests."""
-
     t: int = Field(ge=0)
     canvas_id: int = Field(ge=0)
     tray_id: int = Field(ge=0)
 
 
 class BlenderCodeRequest(BaseModel):
-    """Request for executing Python in Blender."""
-
     code: str = Field(min_length=1)
     timeout_seconds: float | None = Field(default=None, gt=0)
 
 
 class ObjectInfoRequest(BaseModel):
-    """Request for a single Blender object's information."""
-
     object_name: str = Field(min_length=1)
 
 
 class ViewportScreenshotRequest(BaseModel):
-    """Request for a Blender viewport screenshot."""
-
     max_size: int = Field(default=800, ge=100, le=4096)
 
 
 class BlenderValidateObjectRequest(BaseModel):
-    """Request for mesh/printability validation of a Blender object."""
-
     object_name: str = Field(min_length=1)
     evaluated: bool = True
 
 
 class BlenderExportStlRequest(BlenderValidateObjectRequest):
-    """Request for validated STL export from Blender."""
-
     target_path: str
     global_scale: float = Field(default=1000.0, gt=0)
     validate_mesh: bool = True
@@ -103,8 +89,6 @@ class BlenderExportStlRequest(BlenderValidateObjectRequest):
 
 
 class BlenderPrintabilityReviewRequest(BlenderValidateObjectRequest):
-    """Request for heuristic printability review of a Blender mesh."""
-
     bed_size_mm: tuple[float, float, float] = Field(default=(256.0, 256.0, 256.0))
     overhang_degrees: float = Field(default=45.0, ge=0, le=90)
     min_feature_mm: float = Field(default=0.4, gt=0)
@@ -112,8 +96,6 @@ class BlenderPrintabilityReviewRequest(BlenderValidateObjectRequest):
 
 
 class BlenderVisualReviewRequest(BlenderValidateObjectRequest):
-    """Request for multi-angle Blender viewport screenshots."""
-
     output_dir: str
     max_size: int = Field(default=1200, ge=100, le=4096)
     include_top: bool = True
@@ -123,8 +105,6 @@ class BlenderVisualReviewRequest(BlenderValidateObjectRequest):
 
 
 class BlenderBootstrapModelRequest(BaseModel):
-    """Request for creating a repo-standard model/version folder and empty scene."""
-
     model_name: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
     version: int = Field(default=1, ge=1)
     output_root: str | None = None
@@ -141,8 +121,6 @@ class BlenderBootstrapModelRequest(BaseModel):
 
 
 class ElegooPrinterInfo(BaseModel):
-    """Discovered or configured LAN-only Elegoo printer."""
-
     printer_id: str
     host: str
     printer_type: PrinterType
@@ -157,8 +135,6 @@ class ElegooPrinterInfo(BaseModel):
 
 
 class ElegooPrinterRequest(BaseModel):
-    """Common target fields for LAN-only Elegoo machine tools."""
-
     host: str | None = None
     printer_type: PrinterType | None = None
     access_code: str | None = None
@@ -168,16 +144,12 @@ class ElegooPrinterRequest(BaseModel):
 
 
 class ElegooDiscoveryRequest(BaseModel):
-    """Request for UDP LAN discovery."""
-
     timeout_seconds: float | None = Field(default=None, gt=0)
     include_cc2: bool = True
     include_cc: bool = True
 
 
 class ElegooUploadRequest(ElegooPrinterRequest):
-    """Upload a local G-code/3MF file to a LAN printer."""
-
     file_path: str
     file_name: str | None = None
     remote_path: str | None = None
@@ -185,8 +157,6 @@ class ElegooUploadRequest(ElegooPrinterRequest):
 
 
 class ElegooStartPrintRequest(ElegooPrinterRequest):
-    """Start a file that already exists on the LAN printer."""
-
     file_name: str = Field(min_length=1)
     storage: PrintStorage = "local"
     bed_type: int = Field(default=0, ge=0)
@@ -197,8 +167,6 @@ class ElegooStartPrintRequest(ElegooPrinterRequest):
 
 
 class ElegooUploadAndStartRequest(ElegooUploadRequest):
-    """Upload a local file to a LAN printer and start it."""
-
     storage: PrintStorage = "local"
     bed_type: int = Field(default=0, ge=0)
     time_lapse: bool = False
@@ -297,8 +265,6 @@ class GCodeValidationOptions(BaseModel):
 
 
 class SliceRequest(CommonRequest):
-    """Request for slicing one or more models."""
-
     model_paths: list[str] = Field(min_length=1)
     output_dir: str
     plate: int = Field(default=0, ge=0, description="0 slices all plates; i slices plate i.")
@@ -316,30 +282,22 @@ class SliceRequest(CommonRequest):
 
 
 class Export3mfRequest(CommonRequest):
-    """Request for exporting a project as 3MF."""
-
     model_paths: list[str] = Field(min_length=1)
     target_path: str
     min_save: bool = False
 
 
 class ExportStlRequest(CommonRequest):
-    """Request for exporting STL from one or more models."""
-
     model_paths: list[str] = Field(min_length=1)
     mode: Literal["single", "multiple"] = "single"
     target_dir: str | None = None
 
 
 class GCodeValidationRequest(GCodeValidationOptions):
-    """Request for validating a sliced G-code or BGCode file."""
-
     file_path: str = Field(description="Path to a sliced .gcode or .bgcode file.")
 
 
 class MeshArtifactValidationRequest(BaseModel):
-    """Request for validating an STL/mesh artifact outside Blender."""
-
     file_path: str = Field(
         description="Path to an STL, OBJ, GLB, 3MF, or other trimesh-readable mesh."
     )
@@ -376,21 +334,15 @@ class MeshArtifactValidationRequest(BaseModel):
 
 
 class InspectModelRequest(CommonRequest):
-    """Request for printing OrcaSlicer's model information output."""
-
     model_paths: list[str] = Field(min_length=1)
 
 
 class ExportSettingsRequest(CommonRequest):
-    """Request for exporting resolved project settings."""
-
     model_paths: list[str] = Field(default_factory=list)
     target_path: str
 
 
 class BackendStatus(BaseModel):
-    """Availability for one backend."""
-
     available: bool
     message: str | None = None
     suggestions: list[str] = Field(default_factory=list)

@@ -1,6 +1,14 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
+
+from .cost import max_fast_mesh_cost_usd, max_image_cost_usd, max_warmup_cost_usd
+
+GenerationProvider = Literal["modal"]
+MeshQuality = Literal["fast"]
+MeshModel = Literal["triposr"]
 
 
 class GenerationCreateImageRequest(BaseModel):
@@ -22,17 +30,22 @@ class GenerationCreateImageRequest(BaseModel):
             "Optional generation.json path; defaults to the model version generation folder."
         ),
     )
-    provider: str = Field(
+    provider: GenerationProvider = Field(
         default="modal", description="Generation provider; only 'modal' is supported."
     )
-    max_cost_usd: float = Field(default=0.03, gt=0, description="Maximum allowed image cost.")
-    wait_for_completion: bool = Field(
-        default=False,
+    max_cost_usd: float = Field(
+        default_factory=max_image_cost_usd,
+        gt=0,
+        description="Maximum allowed image cost.",
+    )
+    timeout_seconds: float = Field(
+        default=30.0,
+        gt=0,
         description=(
-            "Accepted for API compatibility; current image generation returns completed results."
+            "Accepted for API compatibility; current image generation completes synchronously "
+            "and does not enforce a provider timeout."
         ),
     )
-    timeout_seconds: float = Field(default=30.0, gt=0, description="Requested provider timeout.")
 
 
 class GenerationRemoveBackgroundRequest(BaseModel):
@@ -58,10 +71,10 @@ class GenerationCreateMeshRequest(BaseModel):
     )
     version: int = Field(ge=1, description="Model version number.")
     source_image_path: str = Field(description="Source PNG/JPEG/WebP image for mesh generation.")
-    quality: str = Field(
+    quality: MeshQuality = Field(
         default="fast", description="Mesh quality tier; only 'fast' is implemented."
     )
-    mesh_model: str = Field(
+    mesh_model: MeshModel = Field(
         default="triposr", description="Mesh model; only 'triposr' is implemented."
     )
     output_raw_stl_path: str = Field(description="Raw generated STL output path.")
@@ -77,46 +90,54 @@ class GenerationCreateMeshRequest(BaseModel):
     target_size_mm: tuple[float, float, float] = Field(
         description="Target raw mesh bounding box in millimeters."
     )
-    provider: str = Field(
+    provider: GenerationProvider = Field(
         default="modal", description="Generation provider; only 'modal' is supported."
     )
     seed: int | None = Field(default=None, description="Optional seed recorded in provenance.")
     max_cost_usd: float = Field(
-        default=0.08, gt=0, description="Maximum allowed mesh generation cost."
+        default_factory=max_fast_mesh_cost_usd,
+        gt=0,
+        description="Maximum allowed mesh generation cost.",
     )
-    wait_for_completion: bool = Field(
-        default=False,
+    timeout_seconds: float = Field(
+        default=30.0,
+        gt=0,
         description=(
-            "Accepted for API compatibility; current mesh generation returns completed results."
+            "Accepted for API compatibility; current mesh generation completes synchronously "
+            "and does not enforce a provider timeout."
         ),
     )
-    timeout_seconds: float = Field(default=30.0, gt=0, description="Requested provider timeout.")
 
 
 class GenerationGetJobRequest(BaseModel):
     job_id: str = Field(
         min_length=1, description="Generation job ID returned by a generation tool."
     )
-    wait_seconds: float = Field(
-        default=0.0, ge=0, description="Optional time to wait for completion."
-    )
-    timeout_seconds: float = Field(default=30.0, gt=0, description="Maximum polling wait.")
 
 
 class GenerationCancelJobRequest(BaseModel):
     job_id: str = Field(min_length=1, description="Generation job ID to cancel.")
-    reason: str = Field(default="User requested cancellation.", description="Cancellation reason.")
+    reason: str = Field(
+        default="User requested cancellation.",
+        description=(
+            "Compatibility field; synchronous generation jobs cannot be cancelled after return."
+        ),
+    )
 
 
 class GenerationWarmBackendRequest(BaseModel):
-    provider: str = Field(
+    provider: GenerationProvider = Field(
         default="modal", description="Generation provider; only 'modal' is supported."
     )
     models: list[str] = Field(
         default_factory=lambda: ["flux_1_schnell", "triposr"],
         description="Backend models the caller intends to warm or prepare.",
     )
-    max_cost_usd: float = Field(default=0.50, gt=0, description="Maximum allowed warmup cost.")
+    max_cost_usd: float = Field(
+        default_factory=max_warmup_cost_usd,
+        gt=0,
+        description="Maximum allowed warmup cost.",
+    )
     confirm_billable_warmup: bool = Field(
         default=False,
         description="Must be true to acknowledge that backend warmup can be billable.",
@@ -125,4 +146,11 @@ class GenerationWarmBackendRequest(BaseModel):
         default=False,
         description="Accepted for API compatibility; current warmup acknowledgement is immediate.",
     )
-    timeout_seconds: float = Field(default=30.0, gt=0, description="Requested provider timeout.")
+    timeout_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        description=(
+            "Accepted for API compatibility; current warmup acknowledgement is immediate "
+            "and does not enforce a provider timeout."
+        ),
+    )

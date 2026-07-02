@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import subprocess
+import subprocess  # nosec B404 - OrcaRunner executes the configured local slicer binary.
 from collections.abc import Iterable
 from pathlib import Path
 from platform import system
@@ -9,7 +9,7 @@ from .artifact_validation import validate_gcode_path
 from .config import OrcaConfig, load_orca_config
 from .files import (
     discover_files,
-    read_json_file,
+    read_json_file_result,
     resolve_existing_files,
     resolve_output_dir,
     resolve_parent_for_output,
@@ -86,7 +86,8 @@ class OrcaRunner:
         filaments = resolve_existing_files(request.filament_paths, label="filament_paths")
 
         args = self._common_args(request.datadir)
-        args.extend(["--export-3mf", str(target_path), "--outputdir", str(output_dir)])
+        generated_target = output_dir / target_path.name
+        args.extend(["--export-3mf", target_path.name, "--outputdir", str(output_dir)])
         args.extend(self._path_list_arg("--load-settings", settings))
         args.extend(self._path_list_arg("--load-filaments", filaments))
         if request.min_save:
@@ -97,7 +98,7 @@ class OrcaRunner:
         return self.run(
             args,
             timeout_seconds=request.timeout_seconds,
-            discovery_paths=[target_path, output_dir],
+            discovery_paths=[generated_target, output_dir],
             result_json_path=output_dir / "result.json",
         )
 
@@ -209,7 +210,7 @@ class OrcaRunner:
         command = [str(self.config.binary_path), *args]
         timeout = timeout_seconds or self.config.timeout_seconds
         try:
-            completed = subprocess.run(
+            completed = subprocess.run(  # nosec B603 - command uses an explicit binary path and arg list.
                 command,
                 check=False,
                 capture_output=True,
@@ -217,6 +218,9 @@ class OrcaRunner:
                 timeout=timeout,
             )
         except subprocess.TimeoutExpired as error:
+            result_json_result = (
+                read_json_file_result(result_json_path) if result_json_path else None
+            )
             return CommandResult(
                 ok=False,
                 returncode=None,
@@ -227,7 +231,9 @@ class OrcaRunner:
                 timed_out=True,
                 timeout_seconds=timeout,
                 generated_files=discover_files(discovery_paths or []),
-                result_json=read_json_file(result_json_path) if result_json_path else None,
+                result_json=result_json_result.data if result_json_result else None,
+                result_json_status=result_json_result.status if result_json_result else None,
+                result_json_error=result_json_result.error if result_json_result else None,
                 suggestions=[
                     (
                         "Increase ORCASLICER_TIMEOUT_SECONDS or request timeout_seconds "
@@ -260,7 +266,8 @@ class OrcaRunner:
 
         stdout = self._truncate(completed.stdout)
         stderr = self._truncate(completed.stderr)
-        result_json = read_json_file(result_json_path) if result_json_path else None
+        result_json_result = read_json_file_result(result_json_path) if result_json_path else None
+        result_json = result_json_result.data if result_json_result else None
         ok = completed.returncode == 0
 
         return CommandResult(
@@ -273,6 +280,8 @@ class OrcaRunner:
             timeout_seconds=timeout,
             generated_files=discover_files(discovery_paths or []),
             result_json=result_json,
+            result_json_status=result_json_result.status if result_json_result else None,
+            result_json_error=result_json_result.error if result_json_result else None,
             suggestions=[] if ok else self._failure_suggestions(stderr, result_json),
             message=None
             if ok

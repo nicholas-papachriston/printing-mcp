@@ -1,60 +1,51 @@
 from __future__ import annotations
 
 import time
-from pathlib import Path
 from typing import cast
 
 from ..types import JsonObject, ToolResult
-from .backend_client import GenerationBackendClient
 from .cost import estimate_image_cost_usd
-from .files import append_generation_call, default_record_path, resolve_generation_path
-from .jobs import GenerationJob, GenerationJobStore
+from .dependencies import GenerationDependencies
+from .files import append_generation_call, resolve_generation_path, resolve_generation_record_path
+from .jobs import GenerationJob
+from .results import generation_failure, generation_job_failure
 from .schemas import GenerationCreateImageRequest
+
+IMAGE_RETRYABLE_ERRORS = {"provider_unavailable", "output_write_failed"}
 
 
 class GenerationImageRunner:
-    def __init__(
-        self,
-        *,
-        workspace_root: Path,
-        backend_client: GenerationBackendClient,
-        job_store: GenerationJobStore,
-    ) -> None:
-        self.workspace_root = workspace_root
-        self.backend_client = backend_client
-        self.job_store = job_store
+    def __init__(self, dependencies: GenerationDependencies) -> None:
+        self.dependencies = dependencies
 
     def create_image(self, request: GenerationCreateImageRequest) -> ToolResult:
         start = time.monotonic()
         if request.provider != "modal":
-            return self._failure("provider_unavailable", "Only provider='modal' is supported.")
+            return _image_failure("provider_unavailable", "Only provider='modal' is supported.")
 
         estimated_cost = estimate_image_cost_usd()
         if estimated_cost > request.max_cost_usd:
-            return self._failure("cost_limit_exceeded", "Estimated image cost exceeds limit.")
+            return _image_failure("cost_limit_exceeded", "Estimated image cost exceeds limit.")
 
         output_path = resolve_generation_path(
-            self.workspace_root,
+            self.dependencies.workspace_root,
             request.model_name,
             request.version,
             request.output_path,
             label="output_path",
         )
-        record_path = (
-            resolve_generation_path(
-                self.workspace_root,
-                request.model_name,
-                request.version,
-                request.record_path,
-                label="record_path",
-            )
-            if request.record_path is not None
-            else default_record_path(self.workspace_root, request.model_name, request.version)
+        record_path = resolve_generation_record_path(
+            self.dependencies.workspace_root,
+            request.model_name,
+            request.version,
+            request.record_path,
         )
 
-        job = self.job_store.create(tool_name="generation_create_image", provider=request.provider)
+        job = self.dependencies.job_store.create(
+            tool_name="generation_create_image", provider=request.provider
+        )
         try:
-            backend_result = self.backend_client.create_image(
+            backend_result = self.dependencies.backend_client.create_image(
                 prompt=request.prompt,
                 negative_prompt=request.negative_prompt,
                 seed=request.seed,
@@ -70,6 +61,7 @@ class GenerationImageRunner:
                 version=request.version,
                 tool_name="generation_create_image",
                 status="completed",
+                provider=request.provider,
                 inputs={
                     "prompt": request.prompt,
                     "negative_prompt": request.negative_prompt,
@@ -77,11 +69,11 @@ class GenerationImageRunner:
                     "width": request.width,
                     "height": request.height,
                 },
-                outputs=backend_result,
+                outputs=backend_result.to_record(),
             )
         except (OSError, RuntimeError, ValueError) as error:
             error_code = _image_error_code(error)
-            self.job_store.set_failed(
+            self.dependencies.job_store.set_failed(
                 job,
                 error={
                     "error_code": error_code,
@@ -103,36 +95,20 @@ class GenerationImageRunner:
             "record_path": str(record_path),
             "next_tool": "generation_remove_background",
         }
-        self.job_store.set_completed(job, result=result, record_path=record_path)
+        self.dependencies.job_store.set_completed(job, result=result, record_path=record_path)
         return ToolResult(ok=True, backend="generation", data=cast(JsonObject, result))
 
-    def _failure(self, error_code: str, message: str) -> ToolResult:
-        return ToolResult(
-            ok=False,
-            backend="generation",
-            error_type="backend_error",
-            message=message,
-            data={
-                "status": "failed",
-                "error_code": error_code,
-                "message": message,
-                "retryable": error_code in {"provider_unavailable", "output_write_failed"},
-            },
-        )
-
     def _job_failure(self, job: GenerationJob) -> ToolResult:
-        error = job.error or {
-            "error_code": "provider_job_failed",
-            "message": "Generation image job failed.",
-            "retryable": True,
-        }
-        return ToolResult(
-            ok=False,
-            backend="generation",
-            error_type="backend_error",
-            message=str(error["message"]),
-            data=cast(JsonObject, {"status": "failed", "job_id": job.job_id, **error}),
-        )
+        return generation_job_failure(job, default_message="Generation image job failed.")
+
+
+def _image_failure(error_code: str, message: str) -> ToolResult:
+    return generation_failure(
+        error_code,
+        message,
+        retryable_codes=IMAGE_RETRYABLE_ERRORS,
+        status="failed",
+    )
 
 
 def _image_error_code(error: Exception) -> str:

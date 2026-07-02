@@ -14,6 +14,7 @@ import io
 import json
 import math
 import os
+import select
 import socket
 import threading
 import traceback
@@ -25,6 +26,22 @@ import mathutils
 from bpy.props import BoolProperty, IntProperty, StringProperty
 
 MM_PER_BLENDER_UNIT = 1000.0
+
+
+def _report_bridge_error(context, error):
+    details = "".join(traceback.format_exception(type(error), error, error.__traceback__)).strip()
+    print(f"Printing MCP bridge {context}: {details}")
+
+
+def _report_bridge_debug(message):
+    print(f"Printing MCP bridge: {message}")
+
+
+def _try_parse_command(buffer):
+    try:
+        return json.loads(buffer.decode("utf-8")), None
+    except json.JSONDecodeError as error:
+        return None, error
 
 
 class PrintingMCPServer:
@@ -57,22 +74,23 @@ class PrintingMCPServer:
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.socket.bind((self.host, self.port))
             self.socket.listen(1)
-            self.socket.settimeout(1.0)
 
             while self.running:
-                try:
-                    client, _address = self.socket.accept()
-                except TimeoutError:
-                    continue
-                except OSError:
-                    if self.running:
-                        traceback.print_exc()
-                    break
+                readable, _, _ = select.select([self.socket], [], [], 1.0)
+                if readable:
+                    try:
+                        client, _address = self.socket.accept()
+                    except OSError as error:
+                        if self.running:
+                            _report_bridge_error("accept failed", error)
+                        break
 
-                thread = threading.Thread(target=self._handle_client, args=(client,), daemon=True)
-                thread.start()
-        except OSError:
-            traceback.print_exc()
+                    thread = threading.Thread(
+                        target=self._handle_client, args=(client,), daemon=True
+                    )
+                    thread.start()
+        except OSError as error:
+            _report_bridge_error("server loop failed", error)
             self.running = False
         finally:
             self.running = False
@@ -85,22 +103,23 @@ class PrintingMCPServer:
                 if not data:
                     break
                 buffer += data
-                try:
-                    command = json.loads(buffer.decode("utf-8"))
-                except json.JSONDecodeError:
-                    continue
+                command, decode_error = _try_parse_command(buffer)
+                if decode_error is not None:
+                    _report_bridge_debug(f"waiting for complete JSON command: {decode_error}")
+                    command = None
 
-                buffer = b""
+                if command is not None:
+                    buffer = b""
 
-                def execute_wrapper(command_to_execute=command):
-                    response = self.execute_command(command_to_execute)
-                    with suppress(OSError):
-                        client.sendall(json.dumps(response).encode("utf-8"))
-                    return None
+                    def execute_wrapper(command_to_execute=command):
+                        response = self.execute_command(command_to_execute)
+                        with suppress(OSError):
+                            client.sendall(json.dumps(response).encode("utf-8"))
+                        return None
 
-                bpy.app.timers.register(execute_wrapper, first_interval=0.0)
-        except OSError:
-            pass
+                    bpy.app.timers.register(execute_wrapper, first_interval=0.0)
+        except OSError as error:
+            _report_bridge_debug(f"client socket closed while handling request: {error}")
         finally:
             with suppress(OSError):
                 client.close()
@@ -130,7 +149,7 @@ class PrintingMCPServer:
                 return {"status": "error", "message": str(result["error"])}
             return {"status": "success", "result": result}
         except Exception as error:
-            traceback.print_exc()
+            _report_bridge_error("command execution failed", error)
             return {"status": "error", "message": str(error)}
 
     def get_scene_info(self):
@@ -654,7 +673,7 @@ class PrintingMCPServer:
         namespace = {"bpy": bpy}
         capture_buffer = io.StringIO()
         with redirect_stdout(capture_buffer):
-            exec(code, namespace)
+            exec(code, namespace)  # nosec B102 - this is the explicit Blender code-execution tool.
         return {"executed": True, "result": capture_buffer.getvalue()}
 
     @staticmethod

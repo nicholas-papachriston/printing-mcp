@@ -33,6 +33,23 @@ def default_record_path(workspace_root: Path, model_name: str, version: int) -> 
     return generation_dir(workspace_root, model_name, version) / "generation.json"
 
 
+def resolve_generation_record_path(
+    workspace_root: Path,
+    model_name: str,
+    version: int,
+    record_path: str | None,
+) -> Path:
+    if record_path is None:
+        return default_record_path(workspace_root, model_name, version)
+    return resolve_generation_path(
+        workspace_root,
+        model_name,
+        version,
+        record_path,
+        label="record_path",
+    )
+
+
 def append_generation_call(
     record_path: Path,
     *,
@@ -43,6 +60,7 @@ def append_generation_call(
     inputs: dict[str, Any],
     outputs: dict[str, Any],
     error: dict[str, Any] | None = None,
+    provider: str = "local",
 ) -> None:
     record_path.parent.mkdir(parents=True, exist_ok=True)
     record = _read_record(record_path)
@@ -60,7 +78,7 @@ def append_generation_call(
             "status": status,
             "started_at": datetime.now(UTC).isoformat(),
             "completed_at": datetime.now(UTC).isoformat(),
-            "provider": "local",
+            "provider": provider,
             "inputs": inputs,
             "outputs": outputs,
             "error": error,

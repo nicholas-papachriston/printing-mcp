@@ -26,6 +26,13 @@ cd printing-mcp
 uv sync
 ```
 
+The default install keeps the MCP server lightweight. Install the optional CAD
+extra only when you want to run the `build123d` starter snippet locally:
+
+```sh
+uv sync --extra cad
+```
+
 For local shell usage, copy `.env.example` to `.env` and fill in only the values
 you need. MCP clients can also pass the same values through their own
 configuration.
@@ -129,6 +136,8 @@ For VS Code MCP configuration, use the `servers` key:
 - `ELEGOO_PRINTER_TYPE` - `cc2` for Centauri Carbon 2 or `cc` for Centauri /
   Centauri Carbon.
 - `ELEGOO_ACCESS_CODE` - optional LAN access code for printers requiring auth.
+- `ELEGOO_USE_DEFAULT_ACCESS_CODE` - set to `1` only when you intentionally want
+  to try Elegoo's factory LAN token instead of providing `ELEGOO_ACCESS_CODE`.
 - `ELEGOO_SERIAL_NUMBER` - optional CC2 serial number; fetched over LAN if omitted.
 - `ELEGOO_MAINBOARD_ID` - optional Centauri mainboard ID; required for `cc`
   WebSocket commands unless passed per request.
@@ -146,6 +155,8 @@ For VS Code MCP configuration, use the `servers` key:
 - `PRINTING_GENERATION_MAX_IMAGE_COST_USD` - default text-to-image cost ceiling.
 - `PRINTING_GENERATION_MAX_FAST_MESH_COST_USD` - default fast mesh cost ceiling.
 - `PRINTING_GENERATION_MAX_QUALITY_MESH_COST_USD` - default quality mesh cost
+  ceiling.
+- `PRINTING_GENERATION_MAX_WARMUP_COST_USD` - default backend warmup cost
   ceiling.
 - `PRINTING_GENERATION_MAX_ARTIFACT_MB` - maximum returned generation artifact
   payload size.
@@ -186,24 +197,29 @@ Printing/slicer tools:
 - `printing_status` - check Blender, Elegoo LAN, and OrcaSlicer availability.
 - `geometry_authoring_capabilities` - return recommended geometry authoring
   routes, installed library availability, and reusable Blender/build123d starter
-  snippets for agents.
+  snippets for agents. `build123d` is optional; install the `cad` extra before
+  running that snippet locally.
 - `mesh_validate_artifact` - validate an on-disk STL/OBJ/GLB/3MF artifact with
   `trimesh` before slicing or after export.
 - `gcode_validate_file` - validate a sliced `.gcode` / `.bgcode` file with
   `gcode-lib` before upload or print start.
 - `generation_warm_backend` - explicitly prepare the generation backend.
 - `generation_create_image` - create a source image from a prompt with Nano
-  Banana 2 when `GEMINI_API_KEY` / `GOOGLE_API_KEY` is configured, then return a
-  generation job ID.
+  Banana 2 when `GEMINI_API_KEY` / `GOOGLE_API_KEY` is configured, write the
+  image, append provenance, and return a completed result with a compatibility
+  job ID. Set `PRINTING_GENERATION_DRY_RUN=1` only for intentional placeholder
+  image output.
 - `generation_remove_background` - create a local foreground cutout image and
   append a `generation/generation.json` call entry.
 - `generation_create_mesh` - call Modal TripoSR to create scaled raw fast-tier
-  STL/GLB artifacts under `<model>/v<N>/generation/` and return a generation job
-  ID. Set `PRINTING_GENERATION_DRY_RUN=1` for placeholder artifacts.
-- `generation_get_job` - poll a generation job and return completed artifact
-  paths.
-- `generation_cancel_job` - request cancellation for a non-terminal generation
-  job.
+  STL/GLB artifacts under `<model>/v<N>/generation/`, append provenance, and
+  return a completed result with a compatibility job ID. Set
+  `PRINTING_GENERATION_DRY_RUN=1` only for intentional placeholder artifacts.
+- `generation_get_job` - look up a stored terminal generation result by
+  compatibility job ID. Current create calls complete synchronously, so this is
+  not a polling workflow.
+- `generation_cancel_job` - compatibility endpoint that reports synchronous
+  generation jobs cannot be cancelled after the create call returns.
 
 Generated raw meshes must still be imported into Blender, validated, reviewed,
 and exported with `blender_export_stl` before slicing. The helper module
@@ -411,7 +427,8 @@ reload addon code that is already running inside Blender.
 Use `geometry_authoring_capabilities` before complex shape work when the right
 authoring route is unclear. It reports whether `build123d`, `trimesh`, and
 `gcode-lib` are available and returns copyable starter snippets for file-backed
-Blender scripts or build123d parametric CAD.
+Blender scripts or build123d parametric CAD. `build123d` is intentionally an
+optional `cad` extra so non-CAD MCP installs do not pull in the full BREP stack.
 
 Use `mesh_validate_artifact` as a fast artifact gate for generated or exported
 mesh files. It checks watertightness, volume, connected components, dimensions,

@@ -4,6 +4,7 @@ import base64
 import importlib
 import os
 import tempfile
+from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 from typing import Any, cast
@@ -12,8 +13,87 @@ from ..config import load_local_env, local_env_value
 from ..generation_backend.artifacts import write_placeholder_png
 from ..generation_backend.model_versions import IMAGE_MODEL_ID
 from ..generation_backend.smoke import run_fast_smoke
+from ..generation_backend.triposr_runner import ModalMeshRequest, ModalMeshResult
 
 DEFAULT_MODAL_APP = "printing-generation"
+
+
+@dataclass(frozen=True)
+class ImageGenerationBackendResult:
+    prompt: str
+    negative_prompt: str | None
+    seed: int | None
+    width: int
+    height: int
+    output_path: Path
+    model: str
+    model_id: str
+    image_backend: str
+    dry_run: bool
+    estimated_cost_usd: float
+
+    def to_record(self) -> dict[str, Any]:
+        return {
+            "prompt": self.prompt,
+            "negative_prompt": self.negative_prompt,
+            "seed": self.seed,
+            "width": self.width,
+            "height": self.height,
+            "output_path": str(self.output_path),
+            "model": self.model,
+            "model_id": self.model_id,
+            "image_backend": self.image_backend,
+            "dry_run": self.dry_run,
+            "estimated_cost_usd": self.estimated_cost_usd,
+        }
+
+
+@dataclass(frozen=True)
+class MeshMetadata:
+    units: str
+    target_size_mm: object
+    actual_size_mm: object
+    scale_factor: object
+    triangle_count: object
+
+    def to_record(self) -> dict[str, Any]:
+        return {
+            "units": self.units,
+            "target_size_mm": self.target_size_mm,
+            "actual_size_mm": self.actual_size_mm,
+            "scale_factor": self.scale_factor,
+            "triangle_count": self.triangle_count,
+        }
+
+
+@dataclass(frozen=True)
+class MeshGenerationBackendResult:
+    source_image_path: Path
+    output_raw_stl_path: Path
+    output_raw_glb_path: Path | None
+    mesh: MeshMetadata
+    dry_run: bool
+    mesh_model: str
+    estimated_cost_usd: object
+    mesh_model_id: object | None = None
+    mesh_model_revision: object | None = None
+    elapsed_seconds: object | None = None
+
+    def to_record(self) -> dict[str, Any]:
+        return {
+            "source_image_path": str(self.source_image_path),
+            "output_raw_stl_path": str(self.output_raw_stl_path),
+            "output_raw_glb_path": str(self.output_raw_glb_path)
+            if self.output_raw_glb_path
+            else None,
+            "mesh": self.mesh.to_record(),
+            "dry_run": self.dry_run,
+            "mesh_model": self.mesh_model,
+            "mesh_model_id": self.mesh_model_id,
+            "mesh_model_revision": self.mesh_model_revision,
+            "estimated_cost_usd": self.estimated_cost_usd,
+            "elapsed_seconds": self.elapsed_seconds,
+        }
 
 
 class GenerationBackendClient:
@@ -27,36 +107,42 @@ class GenerationBackendClient:
         height: int,
         output_path: Path,
         max_cost_usd: float,
-    ) -> dict[str, object]:
+    ) -> ImageGenerationBackendResult:
         _ = max_cost_usd
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        api_key = _google_api_key()
-        if api_key:
+        if _generation_dry_run_enabled():
+            write_placeholder_png(output_path, width=width, height=height)
+            image_backend = "placeholder"
+            dry_run = True
+        elif api_key := _google_api_key():
             _create_nano_banana_image(
                 api_key=api_key,
                 prompt=prompt,
                 negative_prompt=negative_prompt,
                 output_path=output_path,
+                width=width,
+                height=height,
             )
             image_backend = "google_genai"
             dry_run = False
         else:
-            write_placeholder_png(output_path)
-            image_backend = "placeholder"
-            dry_run = True
-        return {
-            "prompt": prompt,
-            "negative_prompt": negative_prompt,
-            "seed": seed,
-            "width": width,
-            "height": height,
-            "output_path": str(output_path),
-            "model": "nano_banana_2",
-            "model_id": IMAGE_MODEL_ID,
-            "image_backend": image_backend,
-            "dry_run": dry_run,
-            "estimated_cost_usd": 0.0,
-        }
+            raise RuntimeError(
+                "provider_auth_missing: set GEMINI_API_KEY/GOOGLE_API_KEY or enable "
+                "PRINTING_GENERATION_DRY_RUN=1 for placeholder image output."
+            )
+        return ImageGenerationBackendResult(
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            seed=seed,
+            width=width,
+            height=height,
+            output_path=output_path,
+            model="nano_banana_2",
+            model_id=IMAGE_MODEL_ID,
+            image_backend=image_backend,
+            dry_run=dry_run,
+            estimated_cost_usd=0.0,
+        )
 
     def create_fast_mesh(
         self,
@@ -67,7 +153,7 @@ class GenerationBackendClient:
         output_raw_stl_path: Path,
         output_raw_glb_path: Path | None,
         max_cost_usd: float,
-    ) -> dict[str, object]:
+    ) -> MeshGenerationBackendResult:
         if _generation_dry_run_enabled():
             return self._create_dry_run_mesh(
                 prompt=prompt,
@@ -84,31 +170,29 @@ class GenerationBackendClient:
             max_cost_usd=max_cost_usd,
         )
         output_raw_stl_path.parent.mkdir(parents=True, exist_ok=True)
-        output_raw_stl_path.write_bytes(base64.b64decode(str(result["raw_stl_b64"])))
-        raw_glb_b64 = result.get("raw_glb_b64")
-        if output_raw_glb_path is not None and raw_glb_b64:
+        output_raw_stl_path.write_bytes(base64.b64decode(result.raw_stl_b64))
+        if output_raw_glb_path is not None and result.raw_glb_b64:
             output_raw_glb_path.parent.mkdir(parents=True, exist_ok=True)
-            output_raw_glb_path.write_bytes(base64.b64decode(str(raw_glb_b64)))
-        manifest = result.get("manifest", {})
-        mesh_manifest = cast(dict[str, object], manifest) if isinstance(manifest, dict) else {}
-        return {
-            "source_image_path": str(source_image_path),
-            "output_raw_stl_path": str(output_raw_stl_path),
-            "output_raw_glb_path": str(output_raw_glb_path) if output_raw_glb_path else None,
-            "mesh": {
-                "units": "mm",
-                "target_size_mm": mesh_manifest.get("target_size_mm", list(target_size_mm)),
-                "actual_size_mm": mesh_manifest.get("actual_size_mm", list(target_size_mm)),
-                "scale_factor": mesh_manifest.get("scale_factor", 1.0),
-                "triangle_count": mesh_manifest.get("triangle_count", 0),
-            },
-            "dry_run": False,
-            "mesh_model": mesh_manifest.get("mesh_model", "triposr"),
-            "mesh_model_id": mesh_manifest.get("mesh_model_id"),
-            "mesh_model_revision": mesh_manifest.get("mesh_model_revision"),
-            "estimated_cost_usd": mesh_manifest.get("estimated_cost_usd", max_cost_usd),
-            "elapsed_seconds": mesh_manifest.get("elapsed_seconds"),
-        }
+            output_raw_glb_path.write_bytes(base64.b64decode(result.raw_glb_b64))
+        mesh_manifest = cast(dict[str, object], result.manifest)
+        return MeshGenerationBackendResult(
+            source_image_path=source_image_path,
+            output_raw_stl_path=output_raw_stl_path,
+            output_raw_glb_path=output_raw_glb_path,
+            mesh=MeshMetadata(
+                units="mm",
+                target_size_mm=mesh_manifest.get("target_size_mm", list(target_size_mm)),
+                actual_size_mm=mesh_manifest.get("actual_size_mm", list(target_size_mm)),
+                scale_factor=mesh_manifest.get("scale_factor", 1.0),
+                triangle_count=mesh_manifest.get("triangle_count", 0),
+            ),
+            dry_run=False,
+            mesh_model=str(mesh_manifest.get("mesh_model", "triposr")),
+            mesh_model_id=mesh_manifest.get("mesh_model_id"),
+            mesh_model_revision=mesh_manifest.get("mesh_model_revision"),
+            estimated_cost_usd=mesh_manifest.get("estimated_cost_usd", max_cost_usd),
+            elapsed_seconds=mesh_manifest.get("elapsed_seconds"),
+        )
 
     def _create_dry_run_mesh(
         self,
@@ -119,7 +203,7 @@ class GenerationBackendClient:
         output_raw_stl_path: Path,
         output_raw_glb_path: Path | None,
         max_cost_usd: float,
-    ) -> dict[str, object]:
+    ) -> MeshGenerationBackendResult:
         with tempfile.TemporaryDirectory(prefix="printing-generation-mesh-") as temp_dir:
             artifacts = run_fast_smoke(
                 prompt=prompt,
@@ -134,21 +218,21 @@ class GenerationBackendClient:
                 output_raw_glb_path.parent.mkdir(parents=True, exist_ok=True)
                 output_raw_glb_path.write_bytes(artifacts.raw_glb.read_bytes())
 
-        return {
-            "source_image_path": str(source_image_path),
-            "output_raw_stl_path": str(output_raw_stl_path),
-            "output_raw_glb_path": str(output_raw_glb_path) if output_raw_glb_path else None,
-            "mesh": {
-                "units": "mm",
-                "target_size_mm": list(target_size_mm),
-                "actual_size_mm": list(target_size_mm),
-                "scale_factor": 1.0,
-                "triangle_count": 12,
-            },
-            "dry_run": True,
-            "mesh_model": "triposr",
-            "estimated_cost_usd": 0.0,
-        }
+        return MeshGenerationBackendResult(
+            source_image_path=source_image_path,
+            output_raw_stl_path=output_raw_stl_path,
+            output_raw_glb_path=output_raw_glb_path,
+            mesh=MeshMetadata(
+                units="mm",
+                target_size_mm=list(target_size_mm),
+                actual_size_mm=list(target_size_mm),
+                scale_factor=1.0,
+                triangle_count=12,
+            ),
+            dry_run=True,
+            mesh_model="triposr",
+            estimated_cost_usd=0.0,
+        )
 
 
 def _google_api_key() -> str | None:
@@ -185,7 +269,7 @@ def _call_modal_create_mesh(
     image_bytes: bytes,
     target_size_mm: tuple[float, float, float],
     max_cost_usd: float,
-) -> dict[str, object]:
+) -> ModalMeshResult:
     load_local_env()
     try:
         modal_module = importlib.import_module("modal")
@@ -193,16 +277,15 @@ def _call_modal_create_mesh(
         raise RuntimeError("modal is required for real mesh generation.") from error
 
     create_mesh = modal_module.Function.from_name(_modal_app_name(), "create_mesh")
-    result = create_mesh.remote(
-        {
-            "image_b64": base64.b64encode(image_bytes).decode("ascii"),
-            "target_size_mm": list(target_size_mm),
-            "max_cost_usd": max_cost_usd,
-        }
+    request = ModalMeshRequest(
+        image_b64=base64.b64encode(image_bytes).decode("ascii"),
+        target_size_mm=target_size_mm,
+        max_cost_usd=max_cost_usd,
     )
+    result = create_mesh.remote(request.to_payload())
     if not isinstance(result, dict):
         raise RuntimeError("Modal create_mesh returned an invalid response.")
-    return result
+    return ModalMeshResult.from_payload(result)
 
 
 def _create_nano_banana_image(
@@ -211,6 +294,8 @@ def _create_nano_banana_image(
     prompt: str,
     negative_prompt: str | None,
     output_path: Path,
+    width: int,
+    height: int,
 ) -> None:
     from google import genai
     from google.genai import types
@@ -224,13 +309,15 @@ def _create_nano_banana_image(
         contents=[full_prompt],
         config=types.GenerateContentConfig(
             response_modalities=["IMAGE"],
-            image_config=types.ImageConfig(aspect_ratio="1:1", image_size="1K"),
+            image_config=types.ImageConfig(
+                aspect_ratio=_image_aspect_ratio(width, height), image_size="1K"
+            ),
         ),
     )
     image_bytes = _first_inline_image(response)
     if image_bytes is None:
         raise ValueError("Nano Banana 2 response did not include image bytes.")
-    _write_png(image_bytes, output_path)
+    _write_png(image_bytes, output_path, width=width, height=height)
 
 
 def _first_inline_image(response: Any) -> bytes | None:
@@ -244,8 +331,16 @@ def _first_inline_image(response: Any) -> bytes | None:
     return None
 
 
-def _write_png(image_bytes: bytes, output_path: Path) -> None:
+def _write_png(image_bytes: bytes, output_path: Path, *, width: int, height: int) -> None:
     from PIL import Image
 
     with Image.open(BytesIO(image_bytes)) as image:
+        if image.size != (width, height):
+            image = image.resize((width, height))
         image.save(output_path, format="PNG")
+
+
+def _image_aspect_ratio(width: int, height: int) -> str:
+    if width == height:
+        return "1:1"
+    return "16:9" if width > height else "9:16"

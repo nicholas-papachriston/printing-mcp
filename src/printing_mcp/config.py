@@ -54,6 +54,7 @@ class BlenderConfig(BaseModel):
 class ElegooConfig(BaseModel):
     host: str | None = None
     access_code: str | None = None
+    use_default_access_code: bool = False
     serial_number: str | None = None
     mainboard_id: str | None = None
     printer_type: str | None = None
@@ -160,6 +161,7 @@ def load_elegoo_config() -> ElegooConfig:
     return ElegooConfig(
         host=os.environ.get("ELEGOO_PRINTER_HOST") or None,
         access_code=os.environ.get("ELEGOO_ACCESS_CODE") or None,
+        use_default_access_code=_env_bool("ELEGOO_USE_DEFAULT_ACCESS_CODE"),
         serial_number=os.environ.get("ELEGOO_SERIAL_NUMBER") or None,
         mainboard_id=os.environ.get("ELEGOO_MAINBOARD_ID") or None,
         printer_type=os.environ.get("ELEGOO_PRINTER_TYPE") or None,
@@ -351,6 +353,10 @@ def _resolve_timeout(
             f"{label} must be greater than zero; got {value!r}. Using default {default}."
         )
     return timeout, None
+
+
+def _env_bool(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _resolve_int(
