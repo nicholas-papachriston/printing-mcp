@@ -114,8 +114,8 @@ def create_mesh(
 
         mesh, device = _run_triposr(input_path=input_path, seed=seed)
         mesh = _normalize_mesh(mesh, target_size_mm)
-        mesh.export(raw_glb_path)
         mesh.export(raw_stl_path)
+        _to_gltf_axes(mesh.copy()).export(raw_glb_path)
 
         bounds = mesh.bounds
         actual_size_mm = (bounds[1] - bounds[0]).tolist()
@@ -216,6 +216,15 @@ def _normalize_mesh(mesh: Any, target_size_mm: tuple[float, float, float]) -> An
     translation = np.array([-center_xy[0], -center_xy[1], -bounds[0][2]])
     mesh.apply_translation(translation)
     mesh.metadata["printing_scale_factor"] = scale_factor
+    return mesh
+
+
+def _to_gltf_axes(mesh: Any) -> Any:
+    """Rotate a Z-up print mesh to glTF's Y-up so GLB importers stand it upright."""
+    np = _import_required("numpy")
+    trimesh = _import_required("trimesh")
+
+    mesh.apply_transform(trimesh.transformations.rotation_matrix(-np.pi / 2, [1, 0, 0]))
     return mesh
 
 

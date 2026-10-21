@@ -1,4 +1,5 @@
-"""Stand-in for TripoSR's tsr.system: returns a 1 mm unit cube of 48 triangles.
+"""Stand-in for TripoSR's tsr.system: returns a 1 x 1 x 2 box of 48 triangles,
+tall in Z like real TripoSR output.
 
 FAKE_TSR_ERROR makes from_pretrained raise that message, like a failed checkpoint download.
 """
@@ -30,4 +31,4 @@ class TSR:
         return images
 
     def extract_mesh(self, scene_codes, has_vertex_color):
-        return [trimesh.creation.box(extents=(1.0, 1.0, 1.0)).subdivide()]
+        return [trimesh.creation.box(extents=(1.0, 1.0, 2.0)).subdivide()]
