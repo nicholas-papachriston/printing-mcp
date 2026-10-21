@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from .cost import max_fast_mesh_cost_usd, max_image_cost_usd, max_warmup_cost_usd
 
 GenerationProvider = Literal["modal"]
+MeshProvider = Literal["modal", "local"]
 MeshQuality = Literal["fast"]
 MeshModel = Literal["triposr"]
 
@@ -90,8 +91,12 @@ class GenerationCreateMeshRequest(BaseModel):
     target_size_mm: tuple[float, float, float] = Field(
         description="Target raw mesh bounding box in millimeters."
     )
-    provider: GenerationProvider = Field(
-        default="modal", description="Generation provider; only 'modal' is supported."
+    provider: MeshProvider = Field(
+        default="modal",
+        description=(
+            "Mesh provider: 'modal' (cloud GPU) or 'local' (this machine's GPU via "
+            "PRINTING_LOCAL_MESH_PYTHON and PRINTING_TRIPOSR_DIR)."
+        ),
     )
     seed: int | None = Field(default=None, description="Optional seed recorded in provenance.")
     max_cost_usd: float = Field(

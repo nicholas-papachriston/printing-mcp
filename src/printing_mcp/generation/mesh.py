@@ -114,6 +114,7 @@ class GenerationMeshRunner:
                 output_raw_stl_path=output_raw_stl_path,
                 output_raw_glb_path=output_raw_glb_path,
                 max_cost_usd=request.max_cost_usd,
+                provider=request.provider,
             )
             elapsed_seconds = round(time.monotonic() - start, 3)
             append_generation_call(
@@ -214,8 +215,6 @@ class GenerationMeshRunner:
         )
 
     def _validate_mesh_request(self, request: GenerationCreateMeshRequest) -> ToolResult | None:
-        if request.provider != "modal":
-            return self._failure("provider_unavailable", "Only provider='modal' is supported.")
         if request.mesh_model != "triposr":
             return self._failure(
                 "unsupported_mesh_model", "Only mesh_model='triposr' is implemented."

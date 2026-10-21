@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+import json
+import sys
 import tempfile
 import time
 from dataclasses import dataclass
@@ -92,6 +94,7 @@ def create_triposr_mesh(
     target_size_mm: tuple[float, float, float],
     max_cost_usd: float,
     seed: int | None = None,
+    provider: str = "modal",
 ) -> MeshArtifacts:
     if max_cost_usd <= 0:
         raise ValueError("max_cost_usd must be greater than zero.")
@@ -107,7 +110,7 @@ def create_triposr_mesh(
         raw_stl_path = temp_dir / "mesh.stl"
         input_path.write_bytes(image_bytes)
 
-        mesh = _run_triposr(input_path=input_path, seed=seed)
+        mesh, device = _run_triposr(input_path=input_path, seed=seed)
         mesh = _normalize_mesh(mesh, target_size_mm)
         mesh.export(raw_obj_path)
         mesh.export(raw_glb_path)
@@ -124,7 +127,8 @@ def create_triposr_mesh(
             "schema_version": 1,
             "mode": "fast",
             "dry_run": False,
-            "provider": "modal",
+            "provider": provider,
+            "device": device,
             "seed": seed,
             "target_size_mm": list(target_size_mm),
             "actual_size_mm": [round(float(value), 4) for value in actual_size_mm],
@@ -132,7 +136,7 @@ def create_triposr_mesh(
             "units": "mm",
             "triangle_count": triangle_count,
             "elapsed_seconds": elapsed_seconds,
-            "estimated_cost_usd": max_cost_usd,
+            "estimated_cost_usd": max_cost_usd if provider == "modal" else 0.0,
             **fast_model_manifest(),
         }
         return MeshArtifacts(
@@ -142,18 +146,21 @@ def create_triposr_mesh(
         )
 
 
-def create_triposr_mesh_from_base64(request: dict[str, Any]) -> dict[str, Any]:
+def create_triposr_mesh_from_base64(
+    request: dict[str, Any], *, provider: str = "modal"
+) -> dict[str, Any]:
     mesh_request = ModalMeshRequest.from_payload(request)
     artifacts = create_triposr_mesh(
         image_bytes=base64.b64decode(mesh_request.image_b64),
         target_size_mm=mesh_request.target_size_mm,
         max_cost_usd=mesh_request.max_cost_usd,
         seed=mesh_request.seed,
+        provider=provider,
     )
     return ModalMeshResult.from_artifacts(artifacts).to_payload()
 
 
-def _run_triposr(*, input_path: Path, seed: int | None) -> Any:
+def _run_triposr(*, input_path: Path, seed: int | None) -> tuple[Any, str]:
     np = _import_required("numpy")
     torch = _import_required("torch")
     trimesh = _import_required("trimesh")
@@ -185,7 +192,7 @@ def _run_triposr(*, input_path: Path, seed: int | None) -> Any:
     if not isinstance(mesh, trimesh.Trimesh):
         mesh = trimesh.Trimesh(vertices=mesh.vertices, faces=mesh.faces, process=False)
     mesh.remove_unreferenced_vertices()
-    return mesh
+    return mesh, device
 
 
 def _normalize_mesh(mesh: Any, target_size_mm: tuple[float, float, float]) -> Any:
@@ -218,3 +225,15 @@ def _import_required(module_name: str) -> Any:
         return importlib.import_module(module_name)
     except ImportError as error:
         raise RuntimeError(f"Missing backend dependency: {module_name}") from error
+
+
+def main(argv: list[str]) -> None:
+    """Local GPU entry: read a mesh request JSON file, write the result JSON file."""
+    request_path, result_path = (Path(arg) for arg in argv)
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    result = create_triposr_mesh_from_base64(request, provider="local")
+    result_path.write_text(json.dumps(result), encoding="utf-8")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
