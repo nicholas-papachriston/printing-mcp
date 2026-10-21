@@ -13,14 +13,14 @@ from .model_versions import fast_model_manifest
 
 
 @dataclass(frozen=True)
-class ModalMeshRequest:
+class MeshRequest:
     image_b64: str
     target_size_mm: tuple[float, float, float]
     max_cost_usd: float
     seed: int | None = None
 
     @classmethod
-    def from_payload(cls, payload: dict[str, Any]) -> ModalMeshRequest:
+    def from_payload(cls, payload: dict[str, Any]) -> MeshRequest:
         image_b64 = payload.get("image_b64")
         if not isinstance(image_b64, str) or not image_b64:
             raise ValueError("image_b64 is required.")
@@ -45,20 +45,20 @@ class ModalMeshRequest:
 
 
 @dataclass(frozen=True)
-class ModalMeshResult:
+class MeshResult:
     raw_stl_b64: str
     raw_glb_b64: str
     manifest: dict[str, Any]
 
     @classmethod
-    def from_payload(cls, payload: dict[str, Any]) -> ModalMeshResult:
+    def from_payload(cls, payload: dict[str, Any]) -> MeshResult:
         raw_stl_b64 = payload.get("raw_stl_b64")
         raw_glb_b64 = payload.get("raw_glb_b64")
         manifest = payload.get("manifest", {})
         if not isinstance(raw_stl_b64, str) or not raw_stl_b64:
-            raise ValueError("raw_stl_b64 is required in Modal mesh response.")
+            raise ValueError("raw_stl_b64 is required in mesh response.")
         if not isinstance(raw_glb_b64, str):
-            raise ValueError("raw_glb_b64 is required in Modal mesh response.")
+            raise ValueError("raw_glb_b64 is required in mesh response.")
         return cls(
             raw_stl_b64=raw_stl_b64,
             raw_glb_b64=raw_glb_b64,
@@ -66,7 +66,7 @@ class ModalMeshResult:
         )
 
     @classmethod
-    def from_artifacts(cls, artifacts: MeshArtifacts) -> ModalMeshResult:
+    def from_artifacts(cls, artifacts: MeshArtifacts) -> MeshResult:
         return cls(
             raw_stl_b64=base64.b64encode(artifacts.raw_stl).decode("ascii"),
             raw_glb_b64=base64.b64encode(artifacts.raw_glb or b"").decode("ascii"),
@@ -149,7 +149,7 @@ def create_triposr_mesh(
 def create_triposr_mesh_from_base64(
     request: dict[str, Any], *, provider: str = "modal"
 ) -> dict[str, Any]:
-    mesh_request = ModalMeshRequest.from_payload(request)
+    mesh_request = MeshRequest.from_payload(request)
     artifacts = create_triposr_mesh(
         image_bytes=base64.b64decode(mesh_request.image_b64),
         target_size_mm=mesh_request.target_size_mm,
@@ -157,7 +157,7 @@ def create_triposr_mesh_from_base64(
         seed=mesh_request.seed,
         provider=provider,
     )
-    return ModalMeshResult.from_artifacts(artifacts).to_payload()
+    return MeshResult.from_artifacts(artifacts).to_payload()
 
 
 def _run_triposr(*, input_path: Path, seed: int | None) -> tuple[Any, str]:

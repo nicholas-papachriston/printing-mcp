@@ -21,7 +21,7 @@ from ..config import (
 from ..generation_backend.artifacts import write_placeholder_png
 from ..generation_backend.model_versions import IMAGE_MODEL_ID
 from ..generation_backend.smoke import run_fast_smoke
-from ..generation_backend.triposr_runner import ModalMeshRequest, ModalMeshResult
+from ..generation_backend.triposr_runner import MeshRequest, MeshResult
 from .schemas import MeshProvider
 
 DEFAULT_MODAL_APP = "printing-generation"
@@ -177,7 +177,7 @@ class GenerationBackendClient:
                 max_cost_usd=max_cost_usd,
             )
 
-        request = ModalMeshRequest(
+        request = MeshRequest(
             image_b64=base64.b64encode(source_image_path.read_bytes()).decode("ascii"),
             target_size_mm=target_size_mm,
             max_cost_usd=max_cost_usd,
@@ -285,7 +285,7 @@ def _modal_app_name() -> str:
     )
 
 
-def _call_modal_create_mesh(request: ModalMeshRequest) -> ModalMeshResult:
+def _call_modal_create_mesh(request: MeshRequest) -> MeshResult:
     load_local_env()
     try:
         modal_module = importlib.import_module("modal")
@@ -296,10 +296,10 @@ def _call_modal_create_mesh(request: ModalMeshRequest) -> ModalMeshResult:
     result = create_mesh.remote(request.to_payload())
     if not isinstance(result, dict):
         raise RuntimeError("Modal create_mesh returned an invalid response.")
-    return ModalMeshResult.from_payload(result)
+    return MeshResult.from_payload(result)
 
 
-def _call_local_create_mesh(request: ModalMeshRequest) -> ModalMeshResult:
+def _call_local_create_mesh(request: MeshRequest) -> MeshResult:
     """Run triposr_runner in the local GPU Python, the same code Modal runs in its image."""
     python = local_env_value(LOCAL_MESH_PYTHON_ENV)
     triposr_dir = local_env_value(TRIPOSR_DIR_ENV)
@@ -340,7 +340,7 @@ def _call_local_create_mesh(request: ModalMeshRequest) -> ModalMeshResult:
         if completed.returncode != 0 or not result_path.is_file():
             tail = "\n".join(completed.stderr.strip().splitlines()[-5:])
             raise RuntimeError(f"Local TripoSR failed (exit {completed.returncode}): {tail}")
-        return ModalMeshResult.from_payload(json.loads(result_path.read_text(encoding="utf-8")))
+        return MeshResult.from_payload(json.loads(result_path.read_text(encoding="utf-8")))
 
 
 def _create_nano_banana_image(
