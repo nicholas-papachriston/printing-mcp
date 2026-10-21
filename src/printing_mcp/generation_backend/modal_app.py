@@ -13,10 +13,10 @@ from typing import Any, cast
 
 ParseTargetSizeFn = Callable[[str], tuple[float, float, float]]
 RunFastSmokeFn = Callable[..., Any]
-CreateTriposrMeshFromBase64Fn = Callable[[dict[str, Any]], dict[str, Any]]
+CreateMeshFromBase64Fn = Callable[[dict[str, Any]], dict[str, Any]]
 parse_target_size_fn: ParseTargetSizeFn | None = None
 run_fast_smoke_fn: RunFastSmokeFn | None = None
-create_triposr_mesh_from_base64_fn: CreateTriposrMeshFromBase64Fn | None = None
+create_mesh_from_base64_fn: CreateMeshFromBase64Fn | None = None
 standalone_import_error: ModuleNotFoundError | None = None
 DEFAULT_SMOKE_OUTPUT_DIR = str(Path(tempfile.gettempdir()) / "printing-generation-smoke")  # nosec B108
 LOGGER = logging.getLogger(__name__)
@@ -26,30 +26,30 @@ if __package__ in {None, ""}:
     if len(resolved_path.parents) >= 3:
         sys.path.append(str(resolved_path.parents[2]))
     try:
+        from printing_mcp.generation_backend.mesh_runner import (
+            create_mesh_from_base64 as imported_create_mesh_from_base64,
+        )
         from printing_mcp.generation_backend.smoke import (
             parse_target_size as imported_parse_target_size,
         )
         from printing_mcp.generation_backend.smoke import run_fast_smoke as imported_run_fast_smoke
-        from printing_mcp.generation_backend.triposr_runner import (
-            create_triposr_mesh_from_base64 as imported_create_triposr_mesh_from_base64,
-        )
 
         parse_target_size_fn = imported_parse_target_size
         run_fast_smoke_fn = imported_run_fast_smoke
-        create_triposr_mesh_from_base64_fn = imported_create_triposr_mesh_from_base64
+        create_mesh_from_base64_fn = imported_create_mesh_from_base64
     except ModuleNotFoundError as error:
         LOGGER.debug("Standalone modal_app import fallback failed: %s", error)
         standalone_import_error = error
 else:
+    from .mesh_runner import (
+        create_mesh_from_base64 as imported_create_mesh_from_base64,
+    )
     from .smoke import parse_target_size as imported_parse_target_size
     from .smoke import run_fast_smoke as imported_run_fast_smoke
-    from .triposr_runner import (
-        create_triposr_mesh_from_base64 as imported_create_triposr_mesh_from_base64,
-    )
 
     parse_target_size_fn = imported_parse_target_size
     run_fast_smoke_fn = imported_run_fast_smoke
-    create_triposr_mesh_from_base64_fn = imported_create_triposr_mesh_from_base64
+    create_mesh_from_base64_fn = imported_create_mesh_from_base64
 
 APP_NAME = "printing-generation"
 HF_CACHE_VOLUME = "printing-generation-hf-cache"
@@ -132,7 +132,7 @@ if app is not None:
         secrets=gpu_secrets,
     )
     def create_mesh(request: dict[str, Any]) -> dict[str, Any]:
-        return _create_triposr_mesh_from_base64_remote(request)
+        return _create_mesh_from_base64_remote(request)
 
     @app.function(
         image=gpu_image,
@@ -165,7 +165,7 @@ if app is not None:
         manifest_path = output_dir / "smoke_manifest.json"
         _write_placeholder_png_remote(source_image)
         cutout_image.write_bytes(source_image.read_bytes())
-        result = _create_triposr_mesh_from_base64_remote(
+        result = _create_mesh_from_base64_remote(
             {
                 "image_b64": base64.b64encode(cutout_image.read_bytes()).decode("ascii"),
                 "target_size_mm": request["target_size_mm"],
@@ -300,12 +300,12 @@ def _write_placeholder_png_remote(path: Path) -> None:
     image.save(path, format="PNG")
 
 
-def _create_triposr_mesh_from_base64_remote(request: dict[str, Any]) -> dict[str, Any]:
-    if create_triposr_mesh_from_base64_fn is None:
+def _create_mesh_from_base64_remote(request: dict[str, Any]) -> dict[str, Any]:
+    if create_mesh_from_base64_fn is None:
         raise RuntimeError(
             "TripoSR backend runner is not importable in the Modal environment."
         ) from standalone_import_error
-    return create_triposr_mesh_from_base64_fn(request)
+    return create_mesh_from_base64_fn(request)
 
 
 if __name__ == "__main__":

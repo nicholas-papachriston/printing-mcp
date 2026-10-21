@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from typing import cast
 
-from ..generation_backend.triposr_runner import MeshProvider
+from ..generation_backend.mesh_runner import MeshProvider
 from ..types import JsonObject, ToolResult
 from .cost import estimate_fast_mesh_cost_usd, estimate_warmup_cost_usd
 from .dependencies import GenerationDependencies

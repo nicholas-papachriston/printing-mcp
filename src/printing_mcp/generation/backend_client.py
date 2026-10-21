@@ -19,9 +19,9 @@ from ..config import (
     local_env_value,
 )
 from ..generation_backend.artifacts import write_placeholder_png
+from ..generation_backend.mesh_runner import MeshProvider, MeshRequest, MeshResult
 from ..generation_backend.model_versions import IMAGE_MODEL_ID
 from ..generation_backend.smoke import run_fast_smoke
-from ..generation_backend.triposr_runner import MeshProvider, MeshRequest, MeshResult
 
 DEFAULT_MODAL_APP = "printing-generation"
 LOCAL_MESH_TIMEOUT_SECONDS = 900.0
@@ -299,7 +299,7 @@ def _call_modal_create_mesh(request: MeshRequest) -> MeshResult:
 
 
 def _call_local_create_mesh(request: MeshRequest) -> MeshResult:
-    """Run triposr_runner in the local GPU Python, the same code Modal runs in its image."""
+    """Run mesh_runner in the local GPU Python, the same code Modal runs in its image."""
     python = local_env_value(LOCAL_MESH_PYTHON_ENV)
     triposr_dir = local_env_value(TRIPOSR_DIR_ENV)
     if not python or not triposr_dir:
@@ -319,7 +319,7 @@ def _call_local_create_mesh(request: MeshRequest) -> MeshResult:
                 [
                     python,
                     "-m",
-                    "printing_mcp.generation_backend.triposr_runner",
+                    "printing_mcp.generation_backend.mesh_runner",
                     str(request_path),
                     str(result_path),
                 ],

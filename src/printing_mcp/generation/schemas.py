@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from ..generation_backend.triposr_runner import MeshProvider
+from ..generation_backend.mesh_runner import MeshProvider
 from .cost import max_fast_mesh_cost_usd, max_image_cost_usd, max_warmup_cost_usd
 
 GenerationProvider = Literal["modal"]

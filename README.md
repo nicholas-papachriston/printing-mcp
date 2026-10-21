@@ -259,7 +259,7 @@ canonical `<model>.stl` with `blender_export_stl`.
 
 ### Local GPU backend
 
-`provider: "local"` runs the same `triposr_runner` that Modal runs, in a separate
+`provider: "local"` runs the same `mesh_runner` that Modal runs, in a separate
 Python environment that holds torch and TripoSR, so the server environment stays
 small and GPU memory is freed after each call. It costs nothing and needs an
 NVIDIA GPU with about 3 GB free VRAM. Setup on Windows (PowerShell), with

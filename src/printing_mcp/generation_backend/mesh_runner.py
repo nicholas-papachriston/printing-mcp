@@ -91,7 +91,7 @@ class MeshArtifacts:
     manifest: dict[str, Any]
 
 
-def create_triposr_mesh(
+def create_mesh(
     *,
     image_bytes: bytes,
     target_size_mm: tuple[float, float, float],
@@ -105,17 +105,15 @@ def create_triposr_mesh(
         raise ValueError("target_size_mm values must be greater than zero.")
 
     start = time.monotonic()
-    with tempfile.TemporaryDirectory(prefix="printing-triposr-") as temp_dir_name:
+    with tempfile.TemporaryDirectory(prefix="printing-mesh-") as temp_dir_name:
         temp_dir = Path(temp_dir_name)
         input_path = temp_dir / "input.png"
-        raw_obj_path = temp_dir / "mesh.obj"
         raw_glb_path = temp_dir / "mesh.glb"
         raw_stl_path = temp_dir / "mesh.stl"
         input_path.write_bytes(image_bytes)
 
         mesh, device = _run_triposr(input_path=input_path, seed=seed)
         mesh = _normalize_mesh(mesh, target_size_mm)
-        mesh.export(raw_obj_path)
         mesh.export(raw_glb_path)
         mesh.export(raw_stl_path)
 
@@ -149,11 +147,11 @@ def create_triposr_mesh(
         )
 
 
-def create_triposr_mesh_from_base64(
+def create_mesh_from_base64(
     request: dict[str, Any], *, provider: MeshProvider = "modal"
 ) -> dict[str, Any]:
     mesh_request = MeshRequest.from_payload(request)
-    artifacts = create_triposr_mesh(
+    artifacts = create_mesh(
         image_bytes=base64.b64decode(mesh_request.image_b64),
         target_size_mm=mesh_request.target_size_mm,
         max_cost_usd=mesh_request.max_cost_usd,
@@ -234,7 +232,7 @@ def main(argv: list[str]) -> None:
     """Local GPU entry: read a mesh request JSON file, write the result JSON file."""
     request_path, result_path = (Path(arg) for arg in argv)
     request = json.loads(request_path.read_text(encoding="utf-8"))
-    result = create_triposr_mesh_from_base64(request, provider="local")
+    result = create_mesh_from_base64(request, provider="local")
     result_path.write_text(json.dumps(result), encoding="utf-8")
 
 
