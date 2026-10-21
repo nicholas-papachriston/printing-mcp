@@ -168,7 +168,8 @@ For VS Code MCP configuration, use the `servers` key:
   placeholder mesh artifacts instead of calling Modal.
 - `PRINTING_LOCAL_MESH_PYTHON` / `PRINTING_TRIPOSR_DIR` - Python interpreter of
   the local GPU environment and the TripoSR checkout, for
-  `generation_create_mesh` with `provider: "local"`. See
+  `generation_create_mesh` with `provider: "local"`. `HF_HOME` and
+  `HY3DGEN_MODELS` choose where its weights go. See
   [Local GPU backend](#local-gpu-backend).
 
 See `.env.example` for a copyable non-secret local template.
@@ -216,7 +217,8 @@ Printing/slicer tools:
 - `generation_remove_background` - create a local foreground cutout image and
   append a `generation/generation.json` call entry.
 - `generation_create_mesh` - run TripoSR on Modal (`provider: "modal"`, default)
-  or on this machine's GPU (`provider: "local"`) to create scaled raw fast-tier
+  or TripoSR or Hunyuan3D-2 mini (`mesh_model: "hunyuan3d_mini"`) on this
+  machine's GPU (`provider: "local"`) to create scaled raw fast-tier
   STL/GLB artifacts under `<model>/v<N>/generation/`, append provenance, and
   return a completed result with a compatibility job ID. Set
   `PRINTING_GENERATION_DRY_RUN=1` only for intentional placeholder artifacts.
@@ -259,20 +261,33 @@ canonical `<model>.stl` with `blender_export_stl`.
 
 ### Local GPU backend
 
-`provider: "local"` runs the same `triposr_runner` that Modal runs, in a separate
-Python environment that holds torch and TripoSR, so the server environment stays
-small and GPU memory is freed after each call. It costs nothing and needs an
-NVIDIA GPU with about 3 GB free VRAM. Setup on Windows (PowerShell), with
-`$B = "$env:LOCALAPPDATA\printing-mcp"`:
+`provider: "local"` runs the same `mesh_runner` that Modal runs, in a separate
+Python environment that holds torch and the mesh models, so the server
+environment stays small and GPU memory is freed after each call. It costs
+nothing. Two models run there:
+
+- `mesh_model: "hunyuan3d_mini"` (recommended): Hunyuan3D-2 mini shape, fp16 with
+  the FlashVDM decoder. Clean, upright geometry. Needs about 5 GB free VRAM.
+- `mesh_model: "triposr"`: faster and lighter (about 3 GB), much rougher shapes.
+
+Setup on Windows (PowerShell), with `$B` a folder with about 20 GB free (for
+example `D:\printing-gen`):
 
 ```powershell
 git clone https://github.com/VAST-AI-Research/TripoSR.git $B\TripoSR
 git -C $B\TripoSR checkout 107cefdc244c39106fa830359024f6a2f1c78871
-uv venv -p 3.12 $B\triposr-env
-$env:VIRTUAL_ENV = "$B\triposr-env"
-uv pip install --index-url https://download.pytorch.org/whl/cu126 torch==2.14.1
-uv pip install "transformers<5" omegaconf einops huggingface-hub rembg onnxruntime imageio trimesh pillow numpy
+git clone https://github.com/Tencent-Hunyuan/Hunyuan3D-2.git $B\Hunyuan3D-2
+git -C $B\Hunyuan3D-2 checkout f8db63096c8282cb27354314d896feba5ba6ff8a
+uv venv -p 3.12 $B\gpu-env
+$env:VIRTUAL_ENV = "$B\gpu-env"
+uv pip install --index-url https://download.pytorch.org/whl/cu126 torch==2.14.1 torchvision
+uv pip install "transformers>=4.48,<5" "diffusers<0.36" accelerate einops omegaconf trimesh pymeshlab opencv-python scikit-image rembg onnxruntime numpy tqdm pygltflib xatlas imageio huggingface-hub pillow
+uv pip install --no-deps -e $B\Hunyuan3D-2
 ```
+
+`transformers` 5 renames the DINOv2 layers, so the Hunyuan checkpoint does not
+load; `transformers` 4 brings `huggingface_hub` 0.x, which needs `diffusers`
+below 0.36. Hunyuan's texture extensions are not needed for shape.
 
 TripoSR also needs `torchmcubes`, which has no wheel on PyPI. Build it
 CPU-only (marching cubes is a small step next to the network, which runs on the
@@ -282,28 +297,36 @@ Visual Studio "x64 Native Tools" prompt with `CUDA_PATH` unset and the CUDA
 `bin` folders removed from `PATH`:
 
 ```bat
-set B=%LOCALAPPDATA%\printing-mcp
+set B=D:\printing-gen
 uv venv -p 3.12 %B%\mcubes-build
 uv pip install --python %B%\mcubes-build --index-url https://download.pytorch.org/whl/cpu torch==2.14.1
 uv pip install --python %B%\mcubes-build scikit-build-core cmake ninja pybind11 setuptools numpy pip
 git clone https://github.com/tatsy/torchmcubes.git %B%\torchmcubes
 set CMAKE_GENERATOR=Ninja
 %B%\mcubes-build\Scripts\python -m pip wheel --no-build-isolation --no-deps -w %B%\wheels %B%\torchmcubes
-uv pip install --python %B%\triposr-env --no-deps %B%\wheels\torchmcubes-0.1.0-cp312-cp312-win_amd64.whl
+uv pip install --python %B%\gpu-env --no-deps %B%\wheels\torchmcubes-0.1.0-cp312-cp312-win_amd64.whl
 ```
 
-Then add to `.env`:
+Then add to `.env` (`HF_HOME` and `HY3DGEN_MODELS` keep the weights, about 10
+GB, next to the environment):
 
 ```sh
-PRINTING_LOCAL_MESH_PYTHON=C:/Users/<you>/AppData/Local/printing-mcp/triposr-env/Scripts/python.exe
-PRINTING_TRIPOSR_DIR=C:/Users/<you>/AppData/Local/printing-mcp/TripoSR
+PRINTING_LOCAL_MESH_PYTHON=D:/printing-gen/gpu-env/Scripts/python.exe
+PRINTING_TRIPOSR_DIR=D:/printing-gen/TripoSR
+HF_HOME=D:/printing-gen/hf
+HY3DGEN_MODELS=D:/printing-gen/models
 ```
 
-`printing_status` reports `local_mesh_configured: true` once both are set. The
-first call downloads the TripoSR checkpoint to the Hugging Face cache. On a GTX
-1080 Ti a call takes about 35 s, mostly model load, and inference uses about
-2.5 GB VRAM. `generation.json` records the `device` each mesh ran on. Pascal
-GPUs (GTX 10xx) need the `cu126` torch build: later CUDA builds dropped them.
+`printing_status` reports `local_mesh_configured: true` once
+`PRINTING_LOCAL_MESH_PYTHON` is set; TripoSR also needs `PRINTING_TRIPOSR_DIR`.
+The first call of each model downloads its weights. On a GTX 1080 Ti a
+Hunyuan3D-2 mini call takes about 75 s end to end (about 25 s inference, 4.8 GB
+VRAM) and a TripoSR call about 35 s (2.5 GB). `generation.json` records the
+`mesh_model` and the `device` each mesh ran on. Pascal GPUs (GTX 10xx) need the
+`cu126` torch build: later CUDA builds dropped them.
+
+Raw STL output is Z-up in mm, for `blender_handoff` and slicing; raw GLB output
+is glTF Y-up, so GLB importers (Blender, `tools/model_loop`) stand it upright.
 
 - `orcaslicer_help` - return OrcaSlicer CLI help text.
 - `orcaslicer_slice_model` - slice STL/3MF input files and return generated

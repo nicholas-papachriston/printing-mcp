@@ -19,9 +19,9 @@ from ..config import (
     local_env_value,
 )
 from ..generation_backend.artifacts import write_placeholder_png
-from ..generation_backend.model_versions import IMAGE_MODEL_ID
+from ..generation_backend.mesh_runner import MeshProvider, MeshRequest, MeshResult
+from ..generation_backend.model_versions import IMAGE_MODEL_ID, MeshModel
 from ..generation_backend.smoke import run_fast_smoke
-from ..generation_backend.triposr_runner import MeshProvider, MeshRequest, MeshResult
 
 DEFAULT_MODAL_APP = "printing-generation"
 LOCAL_MESH_TIMEOUT_SECONDS = 900.0
@@ -165,6 +165,7 @@ class GenerationBackendClient:
         output_raw_glb_path: Path | None,
         max_cost_usd: float,
         provider: MeshProvider = "modal",
+        mesh_model: MeshModel = "triposr",
     ) -> MeshGenerationBackendResult:
         if _generation_dry_run_enabled():
             return self._create_dry_run_mesh(
@@ -180,6 +181,7 @@ class GenerationBackendClient:
             image_b64=base64.b64encode(source_image_path.read_bytes()).decode("ascii"),
             target_size_mm=target_size_mm,
             max_cost_usd=max_cost_usd,
+            mesh_model=mesh_model,
         )
         match provider:
             case "modal":
@@ -299,27 +301,36 @@ def _call_modal_create_mesh(request: MeshRequest) -> MeshResult:
 
 
 def _call_local_create_mesh(request: MeshRequest) -> MeshResult:
-    """Run triposr_runner in the local GPU Python, the same code Modal runs in its image."""
+    """Run mesh_runner in the local GPU Python, the same code Modal runs in its image."""
     python = local_env_value(LOCAL_MESH_PYTHON_ENV)
+    if not python:
+        raise RuntimeError(f"Set {LOCAL_MESH_PYTHON_ENV} for provider='local'.")
+    # TripoSR is a source checkout; hy3dgen is installed in the local GPU Python.
     triposr_dir = local_env_value(TRIPOSR_DIR_ENV)
-    if not python or not triposr_dir:
-        raise RuntimeError(
-            f"Set {LOCAL_MESH_PYTHON_ENV} and {TRIPOSR_DIR_ENV} for provider='local'."
-        )
+    if request.mesh_model == "triposr" and not triposr_dir:
+        raise RuntimeError(f"Set {TRIPOSR_DIR_ENV} for mesh_model='triposr' with provider='local'.")
     with tempfile.TemporaryDirectory(prefix="printing-local-mesh-") as temp_dir:
         request_path = Path(temp_dir) / "request.json"
         result_path = Path(temp_dir) / "result.json"
         request_path.write_text(json.dumps(request.to_payload()), encoding="utf-8")
         env = {
             **os.environ,
-            "PYTHONPATH": os.pathsep.join([str(PROJECT_ROOT / "src"), triposr_dir]),
+            "PYTHONPATH": os.pathsep.join(
+                path
+                for path in (
+                    str(PROJECT_ROOT / "src"),
+                    triposr_dir,
+                    os.environ.get("PYTHONPATH"),
+                )
+                if path
+            ),
         }
         try:
             completed = subprocess.run(
                 [
                     python,
                     "-m",
-                    "printing_mcp.generation_backend.triposr_runner",
+                    "printing_mcp.generation_backend.mesh_runner",
                     str(request_path),
                     str(result_path),
                 ],
