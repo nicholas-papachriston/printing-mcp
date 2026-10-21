@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from typing import cast
 
+from ..generation_backend.triposr_runner import MeshProvider
 from ..types import JsonObject, ToolResult
 from .cost import estimate_fast_mesh_cost_usd, estimate_warmup_cost_usd
 from .dependencies import GenerationDependencies
@@ -133,7 +134,7 @@ class GenerationMeshRunner:
                 outputs=backend_result.to_record(),
             )
         except (OSError, RuntimeError, ValueError) as error:
-            error_code = _mesh_error_code(error)
+            error_code = _mesh_error_code(error, request.provider)
             self.job_store.set_failed(
                 job,
                 error={
@@ -238,9 +239,10 @@ class GenerationMeshRunner:
         return generation_job_failure(job, default_message="Generation job failed.")
 
 
-def _mesh_error_code(error: Exception) -> str:
+def _mesh_error_code(error: Exception, provider: MeshProvider) -> str:
     message = str(error).lower()
-    if "token" in message or "auth" in message or "credential" in message:
+    is_auth_error = "token" in message or "auth" in message or "credential" in message
+    if provider == "modal" and is_auth_error:
         return "modal_auth_missing"
     if "cache" in message and ("missing" in message or "not found" in message):
         return "model_cache_missing"

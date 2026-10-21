@@ -21,7 +21,12 @@ class LocalMeshProviderTest(unittest.TestCase):
     def setUp(self):
         self._saved_env = {
             name: os.environ.get(name)
-            for name in (LOCAL_MESH_PYTHON_ENV, TRIPOSR_DIR_ENV, "PRINTING_GENERATION_DRY_RUN")
+            for name in (
+                LOCAL_MESH_PYTHON_ENV,
+                TRIPOSR_DIR_ENV,
+                "PRINTING_GENERATION_DRY_RUN",
+                "FAKE_TSR_ERROR",
+            )
         }
         os.environ["PRINTING_GENERATION_DRY_RUN"] = ""
         workspace = tempfile.TemporaryDirectory()
@@ -84,6 +89,18 @@ class LocalMeshProviderTest(unittest.TestCase):
         outputs = record["calls"][-1]["outputs"]
         self.assertEqual(outputs["device"], "cpu")
         self.assertEqual(outputs["estimated_cost_usd"], 0.0)
+
+    def test_local_auth_failure_is_not_reported_as_modal_auth(self):
+        os.environ[LOCAL_MESH_PYTHON_ENV] = sys.executable
+        os.environ[TRIPOSR_DIR_ENV] = str(FAKE_TRIPOSR_DIR)
+        os.environ["FAKE_TSR_ERROR"] = "401 Client Error: invalid Hugging Face token"
+
+        result = self.create_mesh()
+
+        self.assertFalse(result.ok)
+        data = result.data or {}
+        self.assertEqual(data["error_code"], "provider_job_failed")
+        self.assertIn("invalid Hugging Face token", result.message or "")
 
     def test_local_provider_without_config_fails_with_setup_hint(self):
         os.environ[LOCAL_MESH_PYTHON_ENV] = ""

@@ -1,4 +1,9 @@
-"""Stand-in for TripoSR's tsr.system: returns a 1 mm unit cube of 48 triangles."""
+"""Stand-in for TripoSR's tsr.system: returns a 1 mm unit cube of 48 triangles.
+
+FAKE_TSR_ERROR makes from_pretrained raise that message, like a failed checkpoint download.
+"""
+
+import os
 
 import trimesh
 
@@ -14,6 +19,8 @@ class TSR:
 
     @classmethod
     def from_pretrained(cls, model_id, config_name, weight_name):
+        if error := os.environ.get("FAKE_TSR_ERROR"):
+            raise RuntimeError(error)
         return cls()
 
     def to(self, device):
