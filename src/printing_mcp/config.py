@@ -115,7 +115,7 @@ def modal_auth_configured() -> bool:
 
 def local_mesh_configured() -> bool:
     load_local_env()
-    return bool(os.environ.get(LOCAL_MESH_PYTHON_ENV) and os.environ.get(TRIPOSR_DIR_ENV))
+    return bool(os.environ.get(LOCAL_MESH_PYTHON_ENV))
 
 
 def load_printing_config() -> PrintingMcpConfig:

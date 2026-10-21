@@ -116,6 +116,7 @@ class GenerationMeshRunner:
                 output_raw_glb_path=output_raw_glb_path,
                 max_cost_usd=request.max_cost_usd,
                 provider=request.provider,
+                mesh_model=request.mesh_model,
             )
             elapsed_seconds = round(time.monotonic() - start, 3)
             append_generation_call(
@@ -216,9 +217,9 @@ class GenerationMeshRunner:
         )
 
     def _validate_mesh_request(self, request: GenerationCreateMeshRequest) -> ToolResult | None:
-        if request.mesh_model != "triposr":
+        if request.mesh_model == "hunyuan3d_mini" and request.provider != "local":
             return self._failure(
-                "unsupported_mesh_model", "Only mesh_model='triposr' is implemented."
+                "unsupported_mesh_model", "mesh_model='hunyuan3d_mini' needs provider='local'."
             )
         if request.quality != "fast":
             return self._failure("model_quality_mismatch", "Only quality='fast' is implemented.")

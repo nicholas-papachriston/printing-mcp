@@ -5,11 +5,11 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from ..generation_backend.mesh_runner import MeshProvider
+from ..generation_backend.model_versions import MeshModel
 from .cost import max_fast_mesh_cost_usd, max_image_cost_usd, max_warmup_cost_usd
 
 GenerationProvider = Literal["modal"]
 MeshQuality = Literal["fast"]
-MeshModel = Literal["triposr"]
 
 
 class GenerationCreateImageRequest(BaseModel):
@@ -76,7 +76,11 @@ class GenerationCreateMeshRequest(BaseModel):
         default="fast", description="Mesh quality tier; only 'fast' is implemented."
     )
     mesh_model: MeshModel = Field(
-        default="triposr", description="Mesh model; only 'triposr' is implemented."
+        default="triposr",
+        description=(
+            "Mesh model: 'triposr' (Modal or local) or 'hunyuan3d_mini' (local only; "
+            "Hunyuan3D-2 mini shape, much better geometry than TripoSR)."
+        ),
     )
     output_raw_stl_path: str = Field(description="Raw generated STL output path.")
     output_raw_glb_path: str | None = Field(

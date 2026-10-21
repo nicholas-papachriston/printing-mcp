@@ -2,6 +2,9 @@
 
 import contextlib
 
+float16 = "float16"
+float32 = "float32"
+
 
 def manual_seed(seed):
     return seed

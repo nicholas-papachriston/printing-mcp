@@ -7,9 +7,14 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, assert_never, get_args
 
-from .model_versions import fast_model_manifest
+from .model_versions import (
+    HUNYUAN3D_MINI_MODEL_ID,
+    HUNYUAN3D_MINI_SUBFOLDER,
+    MeshModel,
+    fast_model_manifest,
+)
 
 # Stdlib-only so the runner imports in the Modal image and the local GPU Python.
 MeshProvider = Literal["modal", "local"]
@@ -21,6 +26,7 @@ class MeshRequest:
     target_size_mm: tuple[float, float, float]
     max_cost_usd: float
     seed: int | None = None
+    mesh_model: MeshModel = "triposr"
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> MeshRequest:
@@ -31,11 +37,15 @@ class MeshRequest:
         if not isinstance(raw_target, list | tuple) or len(raw_target) != 3:
             raise ValueError("target_size_mm must contain exactly three values.")
         raw_seed = payload.get("seed")
+        mesh_model = payload.get("mesh_model", "triposr")
+        if mesh_model not in get_args(MeshModel):
+            raise ValueError(f"Unsupported mesh_model: {mesh_model!r}.")
         return cls(
             image_b64=image_b64,
             target_size_mm=(float(raw_target[0]), float(raw_target[1]), float(raw_target[2])),
             max_cost_usd=float(payload.get("max_cost_usd", 0.08)),
             seed=int(raw_seed) if raw_seed is not None else None,
+            mesh_model=mesh_model,
         )
 
     def to_payload(self) -> dict[str, Any]:
@@ -44,6 +54,7 @@ class MeshRequest:
             "target_size_mm": list(self.target_size_mm),
             "max_cost_usd": self.max_cost_usd,
             "seed": self.seed,
+            "mesh_model": self.mesh_model,
         }
 
 
@@ -98,6 +109,7 @@ def create_mesh(
     max_cost_usd: float,
     seed: int | None = None,
     provider: MeshProvider = "modal",
+    mesh_model: MeshModel = "triposr",
 ) -> MeshArtifacts:
     if max_cost_usd <= 0:
         raise ValueError("max_cost_usd must be greater than zero.")
@@ -112,7 +124,13 @@ def create_mesh(
         raw_stl_path = temp_dir / "mesh.stl"
         input_path.write_bytes(image_bytes)
 
-        mesh, device = _run_triposr(input_path=input_path, seed=seed)
+        match mesh_model:
+            case "triposr":
+                mesh, device = _run_triposr(input_path=input_path, seed=seed)
+            case "hunyuan3d_mini":
+                mesh, device = _run_hunyuan3d_mini(input_path=input_path, seed=seed)
+            case _:
+                assert_never(mesh_model)
         mesh = _normalize_mesh(mesh, target_size_mm)
         mesh.export(raw_stl_path)
         _to_gltf_axes(mesh.copy()).export(raw_glb_path)
@@ -121,7 +139,7 @@ def create_mesh(
         actual_size_mm = (bounds[1] - bounds[0]).tolist()
         triangle_count = int(len(mesh.faces))
         if triangle_count <= 12:
-            raise ValueError("mesh_empty: TripoSR produced an unexpectedly small mesh.")
+            raise ValueError(f"mesh_empty: {mesh_model} produced an unexpectedly small mesh.")
 
         elapsed_seconds = round(time.monotonic() - start, 3)
         manifest: dict[str, Any] = {
@@ -138,7 +156,7 @@ def create_mesh(
             "triangle_count": triangle_count,
             "elapsed_seconds": elapsed_seconds,
             "estimated_cost_usd": max_cost_usd if provider == "modal" else 0.0,
-            **fast_model_manifest(),
+            **fast_model_manifest(mesh_model),
         }
         return MeshArtifacts(
             raw_stl=raw_stl_path.read_bytes(),
@@ -157,6 +175,7 @@ def create_mesh_from_base64(
         max_cost_usd=mesh_request.max_cost_usd,
         seed=mesh_request.seed,
         provider=provider,
+        mesh_model=mesh_request.mesh_model,
     )
     return MeshResult.from_artifacts(artifacts).to_payload()
 
@@ -196,16 +215,57 @@ def _run_triposr(*, input_path: Path, seed: int | None) -> tuple[Any, str]:
     return mesh, device
 
 
+def _run_hunyuan3d_mini(*, input_path: Path, seed: int | None) -> tuple[Any, str]:
+    """Hunyuan3D-2 mini shape in fp16 with the FlashVDM decoder.
+
+    fp16 with FlashVDM is both the fastest and the lightest setting, also on Pascal GPUs:
+    the dense volume decoder is the slow part, not fp16 math.
+    """
+    np = _import_required("numpy")
+    torch = _import_required("torch")
+    trimesh = _import_required("trimesh")
+    image_module = _import_required("PIL.Image")
+    shapegen = _import_required("hy3dgen.shapegen")
+    rembg = _import_required("hy3dgen.rembg")
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    dtype = torch.float16 if device == "cuda" else torch.float32
+    image = image_module.open(input_path)
+    if image.mode != "RGBA":
+        image = rembg.BackgroundRemover()(image.convert("RGB"))
+    pipeline = shapegen.Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
+        HUNYUAN3D_MINI_MODEL_ID,
+        subfolder=HUNYUAN3D_MINI_SUBFOLDER,
+        use_safetensors=True,
+        device=device,
+        dtype=dtype,
+    )
+    pipeline.enable_flashvdm()
+    pipeline.to(device, dtype)
+    generator = torch.manual_seed(seed) if seed is not None else None
+    mesh = pipeline(
+        image=image,
+        num_inference_steps=30,
+        octree_resolution=380,
+        num_chunks=20000,
+        generator=generator,
+        output_type="trimesh",
+    )[0]
+    # Hunyuan meshes are Y-up; print meshes are Z-up.
+    mesh.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2, [1, 0, 0]))
+    return mesh, device
+
+
 def _normalize_mesh(mesh: Any, target_size_mm: tuple[float, float, float]) -> Any:
     np = _import_required("numpy")
 
     if mesh.vertices.size == 0 or mesh.faces.size == 0:
-        raise ValueError("mesh_empty: TripoSR produced no vertices or faces.")
+        raise ValueError("mesh_empty: the mesh model produced no vertices or faces.")
 
     bounds = mesh.bounds
     size = bounds[1] - bounds[0]
     if np.any(size <= 0):
-        raise ValueError("mesh_empty: TripoSR mesh has invalid bounds.")
+        raise ValueError("mesh_empty: the generated mesh has invalid bounds.")
 
     target = np.array(target_size_mm, dtype=float)
     scale_factor = float(np.min(target / size))
