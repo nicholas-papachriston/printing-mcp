@@ -7,9 +7,12 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from .model_versions import fast_model_manifest
+
+# Stdlib-only so the runner imports in the Modal image and the local GPU Python.
+MeshProvider = Literal["modal", "local"]
 
 
 @dataclass(frozen=True)
@@ -94,7 +97,7 @@ def create_triposr_mesh(
     target_size_mm: tuple[float, float, float],
     max_cost_usd: float,
     seed: int | None = None,
-    provider: str = "modal",
+    provider: MeshProvider = "modal",
 ) -> MeshArtifacts:
     if max_cost_usd <= 0:
         raise ValueError("max_cost_usd must be greater than zero.")
@@ -147,7 +150,7 @@ def create_triposr_mesh(
 
 
 def create_triposr_mesh_from_base64(
-    request: dict[str, Any], *, provider: str = "modal"
+    request: dict[str, Any], *, provider: MeshProvider = "modal"
 ) -> dict[str, Any]:
     mesh_request = MeshRequest.from_payload(request)
     artifacts = create_triposr_mesh(

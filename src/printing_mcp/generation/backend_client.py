@@ -21,8 +21,7 @@ from ..config import (
 from ..generation_backend.artifacts import write_placeholder_png
 from ..generation_backend.model_versions import IMAGE_MODEL_ID
 from ..generation_backend.smoke import run_fast_smoke
-from ..generation_backend.triposr_runner import MeshRequest, MeshResult
-from .schemas import MeshProvider
+from ..generation_backend.triposr_runner import MeshProvider, MeshRequest, MeshResult
 
 DEFAULT_MODAL_APP = "printing-generation"
 LOCAL_MESH_TIMEOUT_SECONDS = 900.0
