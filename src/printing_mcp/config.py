@@ -14,6 +14,8 @@ DEFAULT_BLENDER_TIMEOUT_SECONDS = 180.0
 DEFAULT_ELEGOO_TIMEOUT_SECONDS = 30.0
 DEFAULT_ELEGOO_DISCOVERY_TIMEOUT_SECONDS = 8.0
 DEFAULT_ELEGOO_UPLOAD_CHUNK_BYTES = 1024 * 1024
+LOCAL_MESH_PYTHON_ENV = "PRINTING_LOCAL_MESH_PYTHON"
+TRIPOSR_DIR_ENV = "PRINTING_TRIPOSR_DIR"
 ORCA_PATH_COMMANDS = (
     "orca-slicer-console",
     "orca-slicer",
@@ -109,6 +111,11 @@ def local_env_value(name: str) -> str | None:
 def modal_auth_configured() -> bool:
     load_local_env()
     return bool(os.environ.get("MODAL_TOKEN_ID") and os.environ.get("MODAL_TOKEN_SECRET"))
+
+
+def local_mesh_configured() -> bool:
+    load_local_env()
+    return bool(os.environ.get(LOCAL_MESH_PYTHON_ENV) and os.environ.get(TRIPOSR_DIR_ENV))
 
 
 def load_printing_config() -> PrintingMcpConfig:

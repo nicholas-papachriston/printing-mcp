@@ -166,6 +166,10 @@ For VS Code MCP configuration, use the `servers` key:
   `generation_create_image` with the configured image model.
 - `PRINTING_GENERATION_DRY_RUN` - set to `1` only when you intentionally want
   placeholder mesh artifacts instead of calling Modal.
+- `PRINTING_LOCAL_MESH_PYTHON` / `PRINTING_TRIPOSR_DIR` - Python interpreter of
+  the local GPU environment and the TripoSR checkout, for
+  `generation_create_mesh` with `provider: "local"`. See
+  [Local GPU backend](#local-gpu-backend).
 
 See `.env.example` for a copyable non-secret local template.
 
@@ -211,7 +215,8 @@ Printing/slicer tools:
   image output.
 - `generation_remove_background` - create a local foreground cutout image and
   append a `generation/generation.json` call entry.
-- `generation_create_mesh` - call Modal TripoSR to create scaled raw fast-tier
+- `generation_create_mesh` - run TripoSR on Modal (`provider: "modal"`, default)
+  or on this machine's GPU (`provider: "local"`) to create scaled raw fast-tier
   STL/GLB artifacts under `<model>/v<N>/generation/`, append provenance, and
   return a completed result with a compatibility job ID. Set
   `PRINTING_GENERATION_DRY_RUN=1` only for intentional placeholder artifacts.
@@ -251,6 +256,54 @@ good smoke produced `dry_run: false`, `mesh_model: triposr`, and about 184k
 triangles. Raw output is intentionally named `*_raw.stl` / `*_raw.glb`; do not
 slice it directly. Import it into Blender, clean/review as needed, then export the
 canonical `<model>.stl` with `blender_export_stl`.
+
+### Local GPU backend
+
+`provider: "local"` runs the same `triposr_runner` that Modal runs, in a separate
+Python environment that holds torch and TripoSR, so the server environment stays
+small and GPU memory is freed after each call. It costs nothing and needs an
+NVIDIA GPU with about 3 GB free VRAM. Setup on Windows (PowerShell), with
+`$B = "$env:LOCALAPPDATA\printing-mcp"`:
+
+```powershell
+git clone https://github.com/VAST-AI-Research/TripoSR.git $B\TripoSR
+git -C $B\TripoSR checkout 107cefdc244c39106fa830359024f6a2f1c78871
+uv venv -p 3.12 $B\triposr-env
+$env:VIRTUAL_ENV = "$B\triposr-env"
+uv pip install --index-url https://download.pytorch.org/whl/cu126 torch==2.14.1
+uv pip install "transformers<5" omegaconf einops huggingface-hub rembg onnxruntime imageio trimesh pillow numpy
+```
+
+TripoSR also needs `torchmcubes`, which has no wheel on PyPI. Build it
+CPU-only (marching cubes is a small step next to the network, which runs on the
+GPU) against the CPU build of the same torch version, so no CUDA toolkit is
+involved, then install the wheel into the GPU environment. Run this from a
+Visual Studio "x64 Native Tools" prompt with `CUDA_PATH` unset and the CUDA
+`bin` folders removed from `PATH`:
+
+```bat
+set B=%LOCALAPPDATA%\printing-mcp
+uv venv -p 3.12 %B%\mcubes-build
+uv pip install --python %B%\mcubes-build --index-url https://download.pytorch.org/whl/cpu torch==2.14.1
+uv pip install --python %B%\mcubes-build scikit-build-core cmake ninja pybind11 setuptools numpy pip
+git clone https://github.com/tatsy/torchmcubes.git %B%\torchmcubes
+set CMAKE_GENERATOR=Ninja
+%B%\mcubes-build\Scripts\python -m pip wheel --no-build-isolation --no-deps -w %B%\wheels %B%\torchmcubes
+uv pip install --python %B%\triposr-env --no-deps %B%\wheels\torchmcubes-0.1.0-cp312-cp312-win_amd64.whl
+```
+
+Then add to `.env`:
+
+```sh
+PRINTING_LOCAL_MESH_PYTHON=C:/Users/<you>/AppData/Local/printing-mcp/triposr-env/Scripts/python.exe
+PRINTING_TRIPOSR_DIR=C:/Users/<you>/AppData/Local/printing-mcp/TripoSR
+```
+
+`printing_status` reports `local_mesh_configured: true` once both are set. The
+first call downloads the TripoSR checkpoint to the Hugging Face cache. On a GTX
+1080 Ti a call takes about 35 s, mostly model load, and inference uses about
+2.5 GB VRAM. `generation.json` records the `device` each mesh ran on. Pascal
+GPUs (GTX 10xx) need the `cu126` torch build: later CUDA builds dropped them.
 
 - `orcaslicer_help` - return OrcaSlicer CLI help text.
 - `orcaslicer_slice_model` - slice STL/3MF input files and return generated
@@ -293,6 +346,7 @@ uv run ruff check src blender_addon.py
 uv run ty check src
 uv run python -m compileall src
 uv run python -m py_compile blender_addon.py
+uv run python -m unittest discover -s tests
 ```
 
 Smoke-test MCP registration:

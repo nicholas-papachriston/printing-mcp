@@ -18,6 +18,7 @@ from .config import (
     load_local_env,
     load_printing_config,
     loaded_env_path,
+    local_mesh_configured,
     modal_auth_configured,
 )
 from .elegoo import ElegooLanRunner
@@ -199,6 +200,7 @@ def printing_status() -> JsonObject:
         "elegoo_host": config.elegoo.host,
         "env_file_loaded": str(loaded_env_path()) if loaded_env_path() else None,
         "modal_auth_configured": modal_auth_configured(),
+        "local_mesh_configured": local_mesh_configured(),
         "generation_dry_run": bool(os.environ.get("PRINTING_GENERATION_DRY_RUN")),
         "timeout_seconds": max(
             config.blender.timeout_seconds,
@@ -491,7 +493,7 @@ def generation_create_image(request: GenerationCreateImageRequest) -> JsonObject
 def generation_create_mesh(request: GenerationCreateMeshRequest) -> JsonObject:
     """Create a scaled raw mesh artifact from a source image.
 
-    Uses Modal TripoSR for provider='modal', quality='fast', mesh_model='triposr'.
+    Uses TripoSR on Modal (provider="modal") or on this machine's GPU (provider="local").
     When PRINTING_GENERATION_DRY_RUN is set, writes placeholder raw STL/GLB
     artifacts instead. The call is synchronous and returns a completed job.
     """
@@ -741,6 +743,7 @@ def config_resource() -> str:
         "generation": {
             "env_file_loaded": str(loaded_env_path()) if loaded_env_path() else None,
             "modal_auth_configured": modal_auth_configured(),
+            "local_mesh_configured": local_mesh_configured(),
             "dry_run": bool(os.environ.get("PRINTING_GENERATION_DRY_RUN")),
         },
     }

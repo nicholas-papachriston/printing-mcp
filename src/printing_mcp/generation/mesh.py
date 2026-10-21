@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from typing import cast
 
+from ..generation_backend.triposr_runner import MeshProvider
 from ..types import JsonObject, ToolResult
 from .cost import estimate_fast_mesh_cost_usd, estimate_warmup_cost_usd
 from .dependencies import GenerationDependencies
@@ -114,6 +115,7 @@ class GenerationMeshRunner:
                 output_raw_stl_path=output_raw_stl_path,
                 output_raw_glb_path=output_raw_glb_path,
                 max_cost_usd=request.max_cost_usd,
+                provider=request.provider,
             )
             elapsed_seconds = round(time.monotonic() - start, 3)
             append_generation_call(
@@ -132,7 +134,7 @@ class GenerationMeshRunner:
                 outputs=backend_result.to_record(),
             )
         except (OSError, RuntimeError, ValueError) as error:
-            error_code = _mesh_error_code(error)
+            error_code = _mesh_error_code(error, request.provider)
             self.job_store.set_failed(
                 job,
                 error={
@@ -214,8 +216,6 @@ class GenerationMeshRunner:
         )
 
     def _validate_mesh_request(self, request: GenerationCreateMeshRequest) -> ToolResult | None:
-        if request.provider != "modal":
-            return self._failure("provider_unavailable", "Only provider='modal' is supported.")
         if request.mesh_model != "triposr":
             return self._failure(
                 "unsupported_mesh_model", "Only mesh_model='triposr' is implemented."
@@ -239,9 +239,10 @@ class GenerationMeshRunner:
         return generation_job_failure(job, default_message="Generation job failed.")
 
 
-def _mesh_error_code(error: Exception) -> str:
+def _mesh_error_code(error: Exception, provider: MeshProvider) -> str:
     message = str(error).lower()
-    if "token" in message or "auth" in message or "credential" in message:
+    is_auth_error = "token" in message or "auth" in message or "credential" in message
+    if provider == "modal" and is_auth_error:
         return "modal_auth_missing"
     if "cache" in message and ("missing" in message or "not found" in message):
         return "model_cache_missing"
